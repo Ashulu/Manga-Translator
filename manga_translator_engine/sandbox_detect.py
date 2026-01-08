@@ -17,7 +17,7 @@ model_url = 'https://huggingface.co/ogkalu/comic-speech-bubble-detector-yolov8m/
 model = YOLO(model_url) 
 
 # 3. Get the Image (Local or URL)
-image_path = "test_sc.png" # <--- Your local file
+image_path = "fairy_tail_100yr_test_ch1_pg9_raw.png" # <--- Your local file
 
 if os.path.exists(image_path):
     print(f"📂 Loading local image: {image_path}")

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
 from transformers import pipeline
@@ -9,6 +10,14 @@ import io
 import numpy as np
 
 app = FastAPI()
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["http://localhost:3000"], # Allow the frontend
+#     allow_credentials=True,
+#     allow_methods=["*"], # Allow all methods (POST, GET, etc.)
+#     allow_headers=["*"], # Allow all headers
+# )
 
 # --- 1. SETUP & MODEL LOADING ---
 # We load these once at startup so requests are fast.
