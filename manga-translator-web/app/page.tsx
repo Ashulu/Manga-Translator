@@ -15,6 +15,7 @@ export default function Home() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loading, setLoading] = useState(false);
   const [imgDimensions, setImgDimensions] = useState<{width: number, height: number} | null>(null);
+  const [selectedFont, setSelectedFont] = useState('anime');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -64,6 +65,33 @@ export default function Home() {
         <ScanEye /> Manga Translator
       </h1>
 
+      {/* Font Control Panel */}
+      <div className="flex gap-4 mb-6 bg-gray-900 p-4 rounded-lg border border-gray-800">
+        <div className="flex flex-col gap-2">
+          <label className="text-xs text-gray-400 uppercase tracking-wider font-bold">Typography</label>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setSelectedFont('anime')}
+              className={`px-4 py-2 rounded text-sm transition ${selectedFont === 'anime' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+            >
+              Anime Ace
+            </button>
+            <button 
+              onClick={() => setSelectedFont('action')}
+              className={`px-4 py-2 rounded text-sm transition ${selectedFont === 'action' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+            >
+              Action Man
+            </button>
+            <button 
+              onClick={() => setSelectedFont('smack')}
+              className={`px-4 py-2 rounded text-sm transition ${selectedFont === 'smack' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+            >
+              Smack Attack
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div 
         onClick={() => fileInputRef.current?.click()}
         className="w-full max-w-xl p-8 border-2 border-dashed border-gray-700 rounded-xl 
@@ -102,16 +130,19 @@ export default function Home() {
             return (
               <div
                 key={i}
-                // FIX IS HERE: No 'bg-white'. Added 'pointer-events-none' so clicks pass through.
-                className="absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden pointer-events-none"
-                style={{
+                className={`absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden pointer-events-none uppercase tracking-wider ${
+                  selectedFont === 'anime' ? 'font-anime' : 
+                  selectedFont === 'action' ? 'font-action' : 
+                  'font-smack'
+                }`}                style={{
                   left: `${left}%`,
                   top: `${top}%`,
                   width: `${width}%`,
                   height: `${height}%`,
-                  fontSize: 'clamp(8px, 1.2vw, 16px)',
+                  fontSize: 'clamp(9px, 2cqw, 14px)',
                   lineHeight: '1.1',
-                  fontWeight: 'bold',
+                  overflowWrap: 'anywhere',
+                  textWrap: 'balance',
                   // White halo around text to make it readable over artifacts
                   textShadow: '0px 0px 3px white, 0px 0px 3px white, 0px 0px 3px white' 
                 }}

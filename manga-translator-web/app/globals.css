@@ -1,4 +1,17 @@
 @import "tailwindcss";
+@import "tailwindcss/utilities";
+
+@layer utilities {
+  .font-anime {
+    font-family: var(--font-anime-ace) !important;
+  }
+  .font-action {
+    font-family: var(--font-action-man) !important;
+  }
+  .font-smack {
+    font-family: var(--font-smack-attack) !important;
+  }
+}
 
 :root {
   --background: #ffffff;
