@@ -17,6 +17,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [imgDimensions, setImgDimensions] = useState<{width: number, height: number} | null>(null);
   const [selectedFont, setSelectedFont] = useState('font-anime');
+  const [targetLang, setTargetLang] = useState('English');
   
   // NEW: Track which bubble is being edited (null = none)
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -45,6 +46,7 @@ export default function Home() {
     setLoading(true);
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('target_language', targetLang);
 
     try {
       const response = await axios.post('http://127.0.0.1:8000/process-page', formData, {
@@ -108,6 +110,22 @@ export default function Home() {
             <button onClick={() => setSelectedFont('font-action')} className={`px-3 py-1 rounded text-xs transition ${selectedFont === 'font-action' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>Action Man</button>
             <button onClick={() => setSelectedFont('font-smack')} className={`px-3 py-1 rounded text-xs transition ${selectedFont === 'font-smack' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>Smack</button>
           </div>
+        </div>
+
+        {/* Language Panel */}
+        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-4">
+          <label className="text-xs text-gray-400 uppercase tracking-wider font-bold">Language</label>
+          <select 
+            value={targetLang}
+            onChange={(e) => setTargetLang(e.target.value)}
+            className="bg-gray-800 text-white text-sm rounded px-2 py-1 border-none outline-none cursor-pointer hover:bg-gray-700"
+          >
+            <option value="English">English</option>
+            <option value="Spanish">Spanish</option>
+            <option value="French">French</option>
+            <option value="German">German</option>
+            <option value="Korean">Korean</option>
+          </select>
         </div>
 
         {/* Action Panel */}

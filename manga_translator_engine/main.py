@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
@@ -94,7 +94,7 @@ def cleanup_text(image_cv, boxes):
 
     return cleaned
 
-def translate_batch_with_gemini(text_list):
+def translate_batch_with_gemini(text_list, target_language):
     """
     Sends a list of Japanese strings to Gemini and expects a JSON list of English translations.
     """
@@ -104,7 +104,7 @@ def translate_batch_with_gemini(text_list):
     # The Prompt Engineering
     prompt = f"""
     You are a professional Manga Translator. 
-    Translate the following list of Japanese text from a manga page into English.
+    Translate the following list of Japanese text from a manga page into {target_language}.
     
     Context:
     - This is from a Shonen manga (casual, slang, sometimes aggressive).
@@ -136,7 +136,8 @@ def translate_batch_with_gemini(text_list):
 # --- ENDPOINTS ---
 
 @app.post("/process-page")
-async def process_page_pipeline(file: UploadFile = File(...)):
+async def process_page_pipeline(file: UploadFile = File(...),
+                                target_language: str = Form("English")):
     # 1. Read Image
     content = await file.read()
     nparr = np.frombuffer(content, np.uint8)
@@ -180,7 +181,7 @@ async def process_page_pipeline(file: UploadFile = File(...)):
     
     # 4. Batch Translate with Gemini
     print(f"🧠 Sending {len(texts_to_translate)} bubbles to Gemini...")
-    translated_texts = translate_batch_with_gemini(texts_to_translate)
+    translated_texts = translate_batch_with_gemini(texts_to_translate, target_language)
     
     # 5. Merge Data
     final_bubbles = []
