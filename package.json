@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@supabase/supabase-js": "^2.94.1",
     "html2canvas": "^1.4.1"
   }
 }

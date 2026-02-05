@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Upload, ScanEye, Loader2, Download, Save } from 'lucide-react';
+import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface Bubble {
@@ -11,179 +11,194 @@ interface Bubble {
   translated: string;
 }
 
+interface PageResult {
+  bubbles: Bubble[];
+  cleaned_image: string;
+  original_size: { width: number; height: number };
+}
+
 export default function Home() {
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  // We now store an ARRAY of pages
+  const [pages, setPages] = useState<PageResult[]>([]);
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  
   const [loading, setLoading] = useState(false);
-  const [imgDimensions, setImgDimensions] = useState<{width: number, height: number} | null>(null);
   const [selectedFont, setSelectedFont] = useState('font-anime');
   const [targetLang, setTargetLang] = useState('English');
-  
-  // NEW: Track which bubble is being edited (null = none)
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null); // Ref for the image container (to download)
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const url = URL.createObjectURL(file);
-    setImageSrc(url);
-    setBubbles([]); 
-    setImgDimensions(null); 
+    setPages([]);
+    setCurrentPageIndex(0);
     setEditingIndex(null);
-    processImage(file);
+    processFile(file);
   };
 
-  const onImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const { naturalWidth, naturalHeight } = e.currentTarget;
-    setImgDimensions({ width: naturalWidth, height: naturalHeight });
-  };
-
-  const processImage = async (file: File) => {
+  const processFile = async (file: File) => {
     setLoading(true);
     const formData = new FormData();
     formData.append('file', file);
     formData.append('target_language', targetLang);
 
     try {
+      // Note: This might take a while for PDFs!
       const response = await axios.post('http://127.0.0.1:8000/process-page', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       
-      setBubbles(response.data.bubbles);
-      if (response.data.cleaned_image) {
-        setImageSrc(response.data.cleaned_image);
-      }
+      // The backend now always returns { pages: [...] }
+      setPages(response.data.pages);
+      
     } catch (error) {
-      console.error("Error connecting to backend:", error);
-      alert("Backend error! Is the Python server running?");
+      console.error("Backend error:", error);
+      alert("Error! If uploading a PDF, it might be taking too long.");
     } finally {
       setLoading(false);
     }
   };
 
-  // --- NEW: EDITING LOGIC ---
-  const handleTextChange = (index: number, newText: string) => {
-    const updatedBubbles = [...bubbles];
-    updatedBubbles[index].translated = newText;
-    setBubbles(updatedBubbles);
+  const handleTextChange = (pageIndex: number, bubbleIndex: number, newText: string) => {
+    const newPages = [...pages];
+    newPages[pageIndex].bubbles[bubbleIndex].translated = newText;
+    setPages(newPages);
   };
 
-  // --- NEW: DOWNLOAD LOGIC ---
-  const handleDownload = async () => {
+  const handleDownloadCurrentPage = async () => {
     if (!containerRef.current) return;
-    
-    // 1. Temporarily hide borders/shadows if needed, but here we want to capture exactly what we see.
-    // html2canvas takes a snapshot of the DOM element
-    const canvas = await html2canvas(containerRef.current, {
-      useCORS: true, // Needed if images are blobs/external
-      scale: 2, // 2x scale for better resolution (Retina quality)
-      backgroundColor: null, // Transparent background if possible
-    });
-
-    // 2. Convert to blob/url
+    const canvas = await html2canvas(containerRef.current, { useCORS: true, scale: 2 });
     const image = canvas.toDataURL("image/jpeg", 0.9);
-    
-    // 3. Trigger download
     const link = document.createElement("a");
     link.href = image;
-    link.download = "translated_manga.jpg";
+    link.download = `manga_page_${currentPageIndex + 1}.jpg`;
     link.click();
   };
 
+  // Helper to get current page data
+  const currentPage = pages[currentPageIndex];
+
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8 flex flex-col items-center">
-      <h1 className="text-4xl font-bold mb-8 text-blue-400 flex items-center gap-3">
+      <h1 className="text-4xl font-bold mb-6 text-blue-400 flex items-center gap-3">
         <ScanEye /> Manga Translator
       </h1>
 
-      {/* Controls: Fonts & Download */}
-      <div className="flex flex-wrap gap-4 mb-6 justify-center w-full max-w-4xl">
-        {/* Font Panel */}
+      {/* --- CONTROLS BAR --- */}
+      <div className="flex flex-wrap gap-4 mb-6 justify-center w-full max-w-5xl">
+        
+        {/* Settings */}
         <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-4">
-          <label className="text-xs text-gray-400 uppercase tracking-wider font-bold">Typography</label>
-          <div className="flex gap-2">
-            <button onClick={() => setSelectedFont('font-anime')} className={`px-3 py-1 rounded text-xs transition ${selectedFont === 'font-anime' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>Anime Ace</button>
-            <button onClick={() => setSelectedFont('font-action')} className={`px-3 py-1 rounded text-xs transition ${selectedFont === 'font-action' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>Action Man</button>
-            <button onClick={() => setSelectedFont('font-smack')} className={`px-3 py-1 rounded text-xs transition ${selectedFont === 'font-smack' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>Smack</button>
+          <div className="flex flex-col">
+            <label className="text-[10px] text-gray-500 uppercase font-bold">Font</label>
+            <select 
+              value={selectedFont} 
+              onChange={(e) => setSelectedFont(e.target.value)}
+              className="bg-transparent text-sm font-bold outline-none cursor-pointer"
+            >
+              <option value="font-anime">Anime Ace</option>
+              <option value="font-action">Action Man</option>
+              <option value="font-smack">Smack</option>
+            </select>
+          </div>
+          <div className="w-px h-8 bg-gray-700"></div>
+          <div className="flex flex-col">
+            <label className="text-[10px] text-gray-500 uppercase font-bold">Language</label>
+            <select 
+              value={targetLang} 
+              onChange={(e) => setTargetLang(e.target.value)}
+              className="bg-transparent text-sm font-bold outline-none cursor-pointer"
+            >
+              <option value="English">English</option>
+              <option value="Spanish">Spanish</option>
+              <option value="French">French</option>
+            </select>
           </div>
         </div>
 
-        {/* Language Panel */}
-        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-4">
-          <label className="text-xs text-gray-400 uppercase tracking-wider font-bold">Language</label>
-          <select 
-            value={targetLang}
-            onChange={(e) => setTargetLang(e.target.value)}
-            className="bg-gray-800 text-white text-sm rounded px-2 py-1 border-none outline-none cursor-pointer hover:bg-gray-700"
-          >
-            <option value="English">English</option>
-            <option value="Spanish">Spanish</option>
-            <option value="French">French</option>
-            <option value="German">German</option>
-            <option value="Korean">Korean</option>
-          </select>
-        </div>
-
-        {/* Action Panel */}
-        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-2">
-          <label className="text-xs text-gray-400 uppercase tracking-wider font-bold">Actions</label>
+        {/* Actions */}
+        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-3">
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-4 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm transition"
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-bold transition"
           >
-            <Upload size={16}/> New Page
+            <Upload size={16}/> Upload PDF/IMG
           </button>
           
-          {imageSrc && (
+          {currentPage && (
             <button 
-              onClick={handleDownload}
-              className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded text-sm transition font-bold"
+              onClick={handleDownloadCurrentPage}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-bold transition"
             >
-              <Download size={16}/> Save Image
+              <Download size={16}/> Save Page
             </button>
           )}
         </div>
       </div>
 
-      <input type="file" hidden ref={fileInputRef} accept="image/*" onChange={handleFileChange} />
+      <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
 
       {loading && (
-        <div className="flex items-center gap-2 text-blue-400 mb-8 animate-pulse">
-          <Loader2 className="animate-spin" />
-          <span>Processing Page...</span>
+        <div className="flex flex-col items-center gap-2 text-blue-400 mb-8 animate-pulse">
+          <Loader2 className="animate-spin w-8 h-8" />
+          <span className="text-lg">Processing... (PDFs take time!)</span>
         </div>
       )}
 
-      {/* --- THE CANVAS AREA --- */}
-      {imageSrc && (
+      {/* --- PAGINATION CONTROLS --- */}
+      {pages.length > 0 && (
+        <div className="flex items-center gap-4 mb-4">
+          <button 
+            disabled={currentPageIndex === 0}
+            onClick={() => setCurrentPageIndex(p => p - 1)}
+            className="p-2 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50"
+          >
+            <ChevronLeft />
+          </button>
+          <span className="font-mono font-bold">
+            Page {currentPageIndex + 1} of {pages.length}
+          </span>
+          <button 
+            disabled={currentPageIndex === pages.length - 1}
+            onClick={() => setCurrentPageIndex(p => p + 1)}
+            className="p-2 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50"
+          >
+            <ChevronRight />
+          </button>
+        </div>
+      )}
+
+      {/* --- CANVAS --- */}
+      {currentPage && (
         <div 
-          ref={containerRef} // This ref allows html2canvas to "see" this div
-          className="relative w-full max-w-4xl border border-gray-800 shadow-2xl bg-white" // bg-white ensures no transparency in JPG
+          ref={containerRef}
+          className="relative w-full max-w-4xl border border-gray-800 shadow-2xl bg-white"
         >
           <img 
-            src={imageSrc} 
-            alt="Uploaded Manga" 
+            src={currentPage.cleaned_image} 
+            alt="Manga Page" 
             className="w-full h-auto block"
-            onLoad={onImageLoad}
           />
 
-          {imgDimensions && bubbles.map((bubble, i) => {
+          {currentPage.bubbles.map((bubble, i) => {
             const [x1, y1, x2, y2] = bubble.box;
-            const left = (x1 / imgDimensions.width) * 100;
-            const top = (y1 / imgDimensions.height) * 100;
-            const width = ((x2 - x1) / imgDimensions.width) * 100;
-            const height = ((y2 - y1) / imgDimensions.height) * 100;
+            // Use server-provided original dimensions for perfect scaling
+            const { width: origW, height: origH } = currentPage.original_size;
+            
+            const left = (x1 / origW) * 100;
+            const top = (y1 / origH) * 100;
+            const width = ((x2 - x1) / origW) * 100;
+            const height = ((y2 - y1) / origH) * 100;
 
             const isEditing = editingIndex === i;
 
             return (
               <div
                 key={i}
-                // Toggle edit mode on click
                 onClick={() => setEditingIndex(i)}
                 className={`absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden 
                             uppercase tracking-wider ${selectedFont} 
@@ -194,8 +209,10 @@ export default function Home() {
                   width: `${width}%`,
                   height: `${height}%`,
                   containerType: 'size',
-                  fontSize: 'clamp(9px, 10cqmin, 16px)',
+                  fontSize: 'clamp(9px, 12cqmin, 16px)',
                   lineHeight: '1.0',
+                  overflowWrap: 'anywhere',
+                  textWrap: 'balance',
                   textShadow: isEditing ? 'none' : '0px 0px 3px white, 0px 0px 3px white',
                 }}
               >
@@ -203,15 +220,12 @@ export default function Home() {
                   <textarea
                     autoFocus
                     value={bubble.translated}
-                    onChange={(e) => handleTextChange(i, e.target.value)}
+                    onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
                     onBlur={() => setEditingIndex(null)}
                     onKeyDown={(e) => {
-                      if(e.key === 'Enter' && !e.shiftKey) {
-                         e.preventDefault(); // Stop newline
-                         setEditingIndex(null); // Save on Enter
-                      }
+                      if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setEditingIndex(null); }
                     }}
-                    className="w-full h-full bg-transparent border-none outline-none resize-none text-center overflow-hidden"
+                    className="w-full h-full bg-transparent border-none outline-none resize-none text-center"
                     style={{ fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit' }}
                   />
                 ) : (
