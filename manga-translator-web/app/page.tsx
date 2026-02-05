@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import html2canvas from 'html2canvas';
+import { supabase } from '@/lib/supabase';
 
 interface Bubble {
   box: [number, number, number, number]; 
@@ -29,6 +30,9 @@ export default function Home() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const [history, setHistory] = useState<any[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -82,6 +86,43 @@ export default function Home() {
   // Helper to get current page data
   const currentPage = pages[currentPageIndex];
 
+  const fetchHistory = async () => {
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .order('created_at', { ascending: false });
+  
+    if (data) setHistory(data);
+  };
+  
+  // Fetch on load
+  useEffect(() => {
+    fetchHistory();
+  }, []);
+
+  const loadProject = async (projectId: string) => {
+    setLoading(true);
+    setShowHistory(false);
+  
+    const { data: pagesData, error } = await supabase
+      .from('pages')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('page_number', { ascending: true });
+  
+    if (pagesData) {
+      // Map database structure back to our PageResult interface
+      const formattedPages = pagesData.map(p => ({
+        bubbles: p.bubbles_json,
+        cleaned_image: p.image_url,
+        original_size: { width: p.width, height: p.height }
+      }));
+      setPages(formattedPages);
+      setCurrentPageIndex(0);
+    }
+    setLoading(false);
+  };
+
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8 flex flex-col items-center">
       <h1 className="text-4xl font-bold mb-6 text-blue-400 flex items-center gap-3">
@@ -123,6 +164,12 @@ export default function Home() {
         {/* Actions */}
         <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-3">
           <button 
+            onClick={() => { setShowHistory(true); fetchHistory(); }}
+            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm font-bold transition flex items-center gap-2"
+          >
+            <ScanEye size={16} /> My History
+          </button>
+          <button 
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-bold transition"
           >
@@ -139,6 +186,33 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {/* SIDEBAR / DRAWER */}
+      {showHistory && (
+        <div className="fixed inset-0 z- flex justify-end">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowHistory(false)} />
+          
+          {/* Panel */}
+          <div className="relative w-80 h-full bg-gray-950 border-l border-gray-800 p-6 overflow-y-auto">
+            <h2 className="text-xl font-bold mb-6">Translation History</h2>
+            <div className="flex flex-col gap-4">
+              {history.map((project) => (
+                <div 
+                  key={project.id}
+                  onClick={() => loadProject(project.id)}
+                  className="p-4 bg-gray-900 border border-gray-800 rounded-lg cursor-pointer hover:border-blue-500 transition"
+                >
+                  <p className="font-bold text-sm truncate">{project.title}</p>
+                  <p className="text-[10px] text-gray-500">
+                    {new Date(project.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
 

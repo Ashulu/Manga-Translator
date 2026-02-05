@@ -252,4 +252,5 @@ async def process_page_pipeline(file: UploadFile = File(...), target_language: s
         # For now, we still return the data to the frontend so it works immediately
         results.append(page_data)
 
+    supabase.table("projects").update({"status": "completed"}).eq("id", project_id).execute()
     return {"project_id": project_id, "pages": results}
