@@ -16,6 +16,7 @@ interface PageResult {
   bubbles: Bubble[];
   cleaned_image: string;
   original_size: { width: number; height: number };
+  project_id: string;
 }
 
 export default function Home() {
@@ -39,18 +40,18 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
 
-    // Check for active session on load
-    useEffect(() => {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setUser(session?.user ?? null);
-      });
-  
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
-      });
-  
-      return () => subscription.unsubscribe();
-    }, []);
+  // Check for active session on load
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
 
@@ -81,6 +82,10 @@ export default function Home() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const [glossary, setGlossary] = useState<{japanese: string, english: string}[]>([]);
+  const [newTerm, setNewTerm] = useState({ jp: '', en: '' });
+  const [activeTab, setActiveTab] = useState<'pages' | 'glossary'>('pages');
 
   // Auth Functions
   const handleAuth = async (e: React.FormEvent) => {
@@ -128,14 +133,20 @@ export default function Home() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('target_language', targetLang);
-      formData.append('project_id', project.id); // <--- Pass the ID we just made
+      formData.append('project_id', project.id);
+      // We send the glossary so the AI knows the rules for this specific upload
+      formData.append('glossary', JSON.stringify(glossary));
 
+      // Wait for the backend to finish processing all pages
       await axios.post('http://127.0.0.1:8000/process-page', formData);
+
+      // 3. SYNC UI
+      // This will fetch the fresh pages and the glossary from the DB
+      await loadProject(project.id);
       
-      // 3. RELOAD
-      loadProject(project.id);
     } catch (error) {
-      console.error(error);
+      console.error("Processing failed:", error);
+      alert("Failed to process file. Check backend logs.");
     } finally {
       setLoading(false);
     }
@@ -205,10 +216,12 @@ export default function Home() {
       const formattedPages = pagesData.map(p => ({
         bubbles: p.bubbles_json,
         cleaned_image: p.image_url,
-        original_size: { width: p.width, height: p.height }
+        original_size: { width: p.width, height: p.height },
+        project_id: p.project_id
       }));
       setPages(formattedPages);
       setCurrentPageIndex(0);
+      fetchGlossary(projectId); 
     }
     setLoading(false);
   };
@@ -294,6 +307,33 @@ export default function Home() {
     });
   
     return results.slice(0, 8); // Limit to top 8 results
+  };
+
+  const fetchGlossary = async (projectId: string) => {
+    const { data } = await supabase
+      .from('glossary_items')
+      .select('japanese, english')
+      .eq('project_id', projectId);
+    if (data) setGlossary(data);
+  };
+  
+  const addGlossaryTerm = async () => {
+    if (!newTerm.jp || !newTerm.en || !pages.length) return;
+    
+    const currentProjectId = history.find(p => p.id === pages[0]?.project_id)?.id; // Or track currentProjectId in state
+  
+    const { error } = await supabase
+      .from('glossary_items')
+      .insert({ 
+        project_id: pages[0].project_id, // Ensure your PageResult interface has project_id
+        japanese: newTerm.jp, 
+        english: newTerm.en 
+      });
+  
+    if (!error) {
+      setGlossary([...glossary, { japanese: newTerm.jp, english: newTerm.en }]);
+      setNewTerm({ jp: '', en: '' });
+    }
   };
 
   if (!user) {
@@ -466,28 +506,60 @@ export default function Home() {
         
         {/* SIDEBAR: Filmstrip Navigation */}
         <aside className="w-64 border-r border-white/5 bg-black/20 flex flex-col md:flex shrink-0">
-          <div className="p-4 border-b border-white/5 flex justify-between items-center">
-            <span className="text-[10px] uppercase font-black text-gray-500 tracking-widest">Chapter Pages</span>
-            <span className="text-[10px] font-mono text-gray-600">{pages.length} total</span>
+          {/* Tab Switcher */}
+          <div className="flex border-b border-white/5">
+            <button 
+              onClick={() => setActiveTab('pages')}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition ${activeTab === 'pages' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-500'}`}
+            >
+              Pages
+            </button>
+            <button 
+              onClick={() => setActiveTab('glossary')}
+              className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition ${activeTab === 'glossary' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-500'}`}
+            >
+              Glossary
+            </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-            {pages.map((p, idx) => (
-              <div 
-                key={idx} 
-                onClick={() => { setCurrentPageIndex(idx); setEditingIndex(null); }}
-                className={`group relative aspect-2/3 w-full rounded-lg border-2 transition-all cursor-pointer overflow-hidden ${currentPageIndex === idx ? 'border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]' : 'border-white/5 hover:border-white/20'}`}
-              >
-                 <div className="absolute inset-0 bg-black/40 group-hover:bg-transparent transition-colors z-10" />
-                 <img src={p.cleaned_image} className="w-full h-full object-cover" />
-                 <div className="absolute bottom-2 left-2 z-20 bg-black/60 px-2 py-0.5 rounded text-[10px] font-mono text-white">
-                    {idx + 1}
-                 </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
+            {activeTab === 'pages' ? (
+              <div className="p-4 space-y-4">
+                {/* ... YOUR EXISTING PAGES MAP ... */}
               </div>
-            ))}
-            {pages.length === 0 && (
-              <div className="text-center py-20 opacity-20 flex flex-col items-center gap-2">
-                 <Upload size={32} />
-                 <span className="text-xs uppercase font-bold tracking-tighter">Empty Rack</span>
+            ) : (
+              <div className="p-4 flex flex-col gap-4">
+                {/* Add Term Form */}
+                <div className="space-y-2 pb-4 border-b border-white/5">
+                  <input 
+                    placeholder="Japanese" 
+                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs outline-none focus:border-blue-500"
+                    value={newTerm.jp}
+                    onChange={e => setNewTerm({...newTerm, jp: e.target.value})}
+                  />
+                  <input 
+                    placeholder="English" 
+                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs outline-none focus:border-blue-500"
+                    value={newTerm.en}
+                    onChange={e => setNewTerm({...newTerm, en: e.target.value})}
+                  />
+                  <button 
+                    onClick={addGlossaryTerm}
+                    className="w-full py-2 bg-blue-600 rounded text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition"
+                  >
+                    Add Term
+                  </button>
+                </div>
+
+                {/* Glossary List */}
+                <div className="space-y-2">
+                  {glossary.map((item, idx) => (
+                    <div key={idx} className="p-2 bg-white/5 rounded border border-white/5 flex flex-col">
+                      <span className="text-gray-500 text-[10px] font-mono">{item.japanese}</span>
+                      <span className="text-blue-400 text-xs font-bold">{item.english}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -693,7 +765,7 @@ export default function Home() {
                     <div className="flex items-center gap-3">
                       <div className="text-gray-500 group-hover:text-blue-400 transition">{res.icon}</div>
                       <div>
-                        <p className="text-sm font-bold text-gray-200 truncate max-w-[300px]">{res.label}</p>
+                        <p className="text-sm font-bold text-gray-200 truncate max-w-75">{res.label}</p>
                         {res.sublabel && <p className="text-[10px] text-gray-500 uppercase">{res.sublabel}</p>}
                       </div>
                     </div>

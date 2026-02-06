@@ -76,13 +76,26 @@ def cleanup_text(image_cv, boxes):
         cleaned[y1:y2, x1:x2] = cv2.inpaint(roi, dilated_mask, 5, cv2.INPAINT_TELEA)
     return cleaned
 
-def translate_batch_with_gemini(text_list, target_language):
+def translate_batch_with_gemini(text_list, target_language, glossary_items):
     if not text_list: return []
 
+    glossary_str = ""
+    if glossary_items:
+        glossary_str = "CRITICAL TERMINOLOGY (ALWAYS USE THESE):\n"
+        for item in glossary_items:
+            glossary_str += f"- {item['japanese']} -> {item['english']}\n"
+
     prompt = f"""
-    You are a professional Manga Translator. Translate to {target_language}.
-    Context: Shonen manga, casual/slang. "Fairy Tail" (妖精の尻尾) is a proper noun.
-    Return ONLY a JSON array of strings.
+    You are a professional Manga Translator. Translate the following text to {target_language}.
+    
+    {glossary_str}
+    
+    Context:
+    - This is a Shonen manga (casual/slang).
+    - Handle sarcasm and rhetorical questions correctly.
+    - Return ONLY a JSON array of strings. 
+    - Maintain the exact same number of items as the input.
+
     Input: {json.dumps(text_list, ensure_ascii=False)}
     """
     
@@ -115,7 +128,7 @@ def translate_batch_with_gemini(text_list, target_language):
     return ["Translation Error"] * len(text_list)
 
 
-def process_single_image(pil_image, target_language):
+def process_single_image(pil_image, target_language, glossary_items):
     """
     Reusable function that takes a PIL image and returns the translated data + cleaned Base64
     """
@@ -147,7 +160,7 @@ def process_single_image(pil_image, target_language):
         bubbles_data.append({"box": [x1, y1, x2, y2], "japanese": japanese_text})
 
     # 3. Translate
-    translated_texts = translate_batch_with_gemini(texts_to_translate, target_language)
+    translated_texts = translate_batch_with_gemini(texts_to_translate, target_language, glossary_items)
     
     # 4. Merge
     final_bubbles = []
@@ -210,12 +223,18 @@ def save_page_to_supabase(project_id, page_number, image_cv, bubbles_json, width
 async def process_page_pipeline(
     file: UploadFile = File(...), 
     target_language: str = Form("English"),
-    project_id: str = Form(...) # <--- NOW REQUIRED FROM FRONTEND
+    project_id: str = Form(...),
+    glossary: str = Form("[]")
 ):
     content = await file.read()
+
+    try:
+        glossary_items = json.loads(glossary)
+    except:
+        glossary_items = []
     
     # We no longer insert a project here! The frontend already did it.
-    print(f"📁 Processing for existing Project: {project_id}")
+    print(f"📁 Processing Project: {project_id} with {len(glossary_items)} glossary terms")
 
     if file.filename.endswith(".pdf"):
         pages_images = convert_from_bytes(content)
@@ -223,7 +242,7 @@ async def process_page_pipeline(
         pages_images = [Image.open(io.BytesIO(content)).convert("RGB")]
 
     for i, page_image in enumerate(pages_images):
-        page_data = process_single_image(page_image, target_language)
+        page_data = process_single_image(page_image, target_language, glossary_items)
         
         # Extract CV2 image for cleanup
         cleaned_cv = cv2.cvtColor(np.array(page_image), cv2.COLOR_RGB2BGR)
