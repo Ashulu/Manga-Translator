@@ -39,23 +39,47 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
 
+    // Check for active session on load
+    useEffect(() => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setUser(session?.user ?? null);
+      });
+  
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user ?? null);
+      });
+  
+      return () => subscription.unsubscribe();
+    }, []);
+
   const [showAuthModal, setShowAuthModal] = useState(false);
 
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
 
-  // Check for active session on load
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. Check if the user is currently typing in an input or textarea
+      const isTyping = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+  
+      // 2. Only trigger if Cmd/Ctrl + K is pressed
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsPaletteOpen(prev => !prev);
+      }
+  
+      // 3. Escape should always close it, even if typing
+      if (e.key === 'Escape') {
+        setIsPaletteOpen(false);
+      }
+    };
+  
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // Auth Functions
@@ -228,6 +252,48 @@ export default function Home() {
       console.error("Error deleting project:", error);
       alert("Failed to delete project.");
     }
+  };
+
+  const getPaletteResults = () => {
+    if (!paletteQuery) return [];
+  
+    const results: any[] = [];
+    const q = paletteQuery.toLowerCase();
+  
+    // A. Static Commands
+    if ("export save download".includes(q)) {
+      results.push({ type: 'command', label: 'Export Current Page', action: handleDownloadCurrentPage, icon: <Download size={14}/> });
+    }
+  
+    // B. Page Navigation
+    if (q.startsWith('p') || !isNaN(Number(q))) {
+      const pageNum = parseInt(q.replace(/\D/g, ''));
+      if (pageNum > 0 && pageNum <= pages.length) {
+        results.push({ 
+          type: 'nav', 
+          label: `Jump to Page ${pageNum}`, 
+          action: () => setCurrentPageIndex(pageNum - 1), 
+          icon: <ChevronRight size={14}/> 
+        });
+      }
+    }
+  
+    // C. Deep Search in Bubbles
+    pages.forEach((page, pIdx) => {
+      page.bubbles.forEach((bubble) => {
+        if (bubble.translated.toLowerCase().includes(q)) {
+          results.push({
+            type: 'search',
+            label: bubble.translated,
+            sublabel: `Page ${pIdx + 1}`,
+            action: () => setCurrentPageIndex(pIdx),
+            icon: <ScanEye size={14}/>
+          });
+        }
+      });
+    });
+  
+    return results.slice(0, 8); // Limit to top 8 results
   };
 
   if (!user) {
@@ -468,43 +534,52 @@ export default function Home() {
                   const width = ((x2 - x1) / origW) * 100;
                   const height = ((y2 - y1) / origH) * 100;
 
+                  const isEditing = editingIndex === i;
+
                   return (
                     <div
                       key={i}
                       onClick={(e) => { e.stopPropagation(); setEditingIndex(i); }}
-                      className={`absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden 
-                                  uppercase tracking-tight leading-none ${selectedFont} 
-                                  ${editingIndex === i ? 'ring-2 ring-blue-500 bg-white/95 z-50' : ''}`}
+                      // We set the container type here...
+                      className="absolute z-10 overflow-hidden pointer-events-auto cursor-pointer"
                       style={{
                         left: `${left}%`,
                         top: `${top}%`,
                         width: `${width}%`,
                         height: `${height}%`,
-                        containerType: 'size',
-                        
-                        // IMPROVED TYPESETTING LOGIC:
-                        // 1. We lowered the min-size to 4px for tiny labels.
-                        // 2. We use 'cqw' to ensure text doesn't overflow width-wise.
-                        fontSize: 'clamp(4px, 15cqw, 20px)', 
-                        
-                        wordBreak: 'break-word',
-                        hyphens: 'auto',
-                        textWrap: 'balance',
-                        textShadow: editingIndex === i ? 'none' : '0px 0px 2px white',
+                        containerType: 'size', // This div is the container
                       }}
                     >
-                      {editingIndex === i ? (
-                        <textarea
-                          autoFocus
-                          value={bubble.translated}
-                          onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
-                          onBlur={() => setEditingIndex(null)}
-                          className="w-full h-full bg-transparent border-none outline-none resize-none text-center p-0"
-                          style={{ fontSize: 'inherit', fontFamily: 'inherit' }}
-                        />
-                      ) : (
-                        <span className="w-full">{bubble.translated}</span>
-                      )}
+                      {/* ...and apply the font size to this inner wrapper */}
+                      <div 
+                        className={`w-full h-full flex items-center justify-center text-center p-[5cqmin]
+                                    uppercase tracking-tight leading-[1.1] ${selectedFont} text-black
+                                    ${isEditing ? 'bg-white/95 ring-2 ring-blue-500' : 'hover:bg-white/10'}`}
+                        style={{
+                          // 8cqmin means "8% of the bubble's smallest dimension"
+                          // This is very stable and prevents the "MI RA" vertical stacking
+                          fontSize: '12cqmin', 
+                          textWrap: 'balance',
+                          textShadow: isEditing ? 'none' : '0px 0px 2px white, 0px 0px 2px white',
+                          transition: 'background 0.2s ease',
+                        }}
+                      >
+                        {isEditing ? (
+                          <textarea
+                            autoFocus
+                            value={bubble.translated}
+                            onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
+                            onBlur={() => setEditingIndex(null)}
+                            onKeyDown={(e) => {
+                              if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setEditingIndex(null); }
+                            }}
+                            className="w-full h-full bg-transparent border-none outline-none resize-none text-center p-0 m-0"
+                            style={{ fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit' }}
+                          />
+                        ) : (
+                          <span className="w-full pointer-events-none">{bubble.translated}</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -568,6 +643,77 @@ export default function Home() {
                   <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">{new Date(project.created_at).toLocaleDateString()}</p>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- FEATURE #6: COMMAND PALETTE --- */}
+      {isPaletteOpen && (
+        <div className="fixed inset-0 z-300 flex items-start justify-center pt-[15vh] px-4">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/60 backdrop-blur-md" 
+            onClick={() => setIsPaletteOpen(false)} 
+          />
+          
+          {/* Search Box */}
+          <div className="relative w-full max-w-xl bg-[#1a1b1e] border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center px-4 py-4 border-b border-white/5">
+              <ScanEye className="text-blue-500 mr-3" size={20} />
+              <input 
+                autoFocus
+                placeholder="Search bubbles, pages, or commands..."
+                className="bg-transparent border-none outline-none w-full text-lg font-medium placeholder:text-gray-600"
+                value={paletteQuery}
+                onChange={(e) => setPaletteQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                      const results = getPaletteResults();
+                      if (results.length > 0) {
+                        results[0].action();
+                        setIsPaletteOpen(false);
+                        setPaletteQuery("");
+                      }
+                  }
+                }}
+              />
+              <div className="text-[10px] font-mono bg-white/5 px-2 py-1 rounded text-gray-500">ESC</div>
+            </div>
+
+            {/* Results List */}
+            <div className="max-h-[60vh] overflow-y-auto p-2">
+              {getPaletteResults().length > 0 ? (
+                getPaletteResults().map((res, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => { res.action(); setIsPaletteOpen(false); setPaletteQuery(""); }}
+                    className="w-full flex items-center justify-between p-3 hover:bg-white/5 rounded-xl transition text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="text-gray-500 group-hover:text-blue-400 transition">{res.icon}</div>
+                      <div>
+                        <p className="text-sm font-bold text-gray-200 truncate max-w-[300px]">{res.label}</p>
+                        {res.sublabel && <p className="text-[10px] text-gray-500 uppercase">{res.sublabel}</p>}
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-gray-700 font-mono group-hover:text-gray-400">SELECT</span>
+                  </button>
+                ))
+              ) : (
+                <div className="py-12 text-center">
+                  <p className="text-xs text-gray-600 font-mono uppercase tracking-widest">
+                    {paletteQuery ? "No results found" : "Type to search studio..."}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Tips */}
+            <div className="bg-black/20 px-4 py-2 border-t border-white/5 flex gap-4">
+              <span className="text-[9px] text-gray-600"><strong>↑↓</strong> to navigate</span>
+              <span className="text-[9px] text-gray-600"><strong>ENTER</strong> to select</span>
+              <span className="text-[9px] text-gray-600"><strong>P + #</strong> to jump to page</span>
             </div>
           </div>
         </div>
