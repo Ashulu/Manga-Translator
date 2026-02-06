@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { supabase } from '@/lib/supabase';
 
@@ -34,6 +34,42 @@ export default function Home() {
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
+  const [user, setUser] = useState<any>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+
+  // Check for active session on load
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Auth Functions
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSignUp) {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) alert(error.message);
+      else alert("Check your email for the confirmation link!");
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) alert(error.message);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setPages([]); // Clear current view
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -45,23 +81,31 @@ export default function Home() {
   };
 
   const processFile = async (file: File) => {
+    if (!user) return alert("Please log in first!");
     setLoading(true);
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('target_language', targetLang);
 
     try {
-      // Note: This might take a while for PDFs!
-      const response = await axios.post('http://127.0.0.1:8000/process-page', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      // 1. CREATE PROJECT ON FRONTEND
+      const { data: project, error: pError } = await supabase
+        .from('projects')
+        .insert({ title: file.name, user_id: user.id })
+        .select()
+        .single();
+
+      if (pError) throw pError;
+
+      // 2. SEND TO BACKEND
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('target_language', targetLang);
+      formData.append('project_id', project.id); // <--- Pass the ID we just made
+
+      await axios.post('http://127.0.0.1:8000/process-page', formData);
       
-      // The backend now always returns { pages: [...] }
-      setPages(response.data.pages);
-      
+      // 3. RELOAD
+      loadProject(project.id);
     } catch (error) {
-      console.error("Backend error:", error);
-      alert("Error! If uploading a PDF, it might be taking too long.");
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -123,6 +167,35 @@ export default function Home() {
     setLoading(false);
   };
 
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-gray-900 border border-gray-800 p-8 rounded-2xl">
+          <h1 className="text-2xl font-bold text-center mb-6">{isSignUp ? 'Create Account' : 'Sign In'}</h1>
+          <form onSubmit={handleAuth} className="flex flex-col gap-4">
+            <input 
+              type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)}
+              className="bg-gray-800 border-gray-700 p-3 rounded" required 
+            />
+            <input 
+              type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
+              className="bg-gray-800 border-gray-700 p-3 rounded" required 
+            />
+            <button className="bg-blue-600 p-3 rounded font-bold hover:bg-blue-500 transition">
+              {isSignUp ? 'Sign Up' : 'Login'}
+            </button>
+          </form>
+          <button 
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="w-full text-center mt-4 text-sm text-gray-400 hover:underline"
+          >
+            {isSignUp ? 'Already have an account? Login' : 'Need an account? Sign Up'}
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-8 flex flex-col items-center">
       <h1 className="text-4xl font-bold mb-6 text-blue-400 flex items-center gap-3">
@@ -164,6 +237,12 @@ export default function Home() {
         {/* Actions */}
         <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-3">
           <button 
+            onClick={handleSignOut}
+            className="px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition"
+          >
+            Sign Out
+          </button>
+          <button 
             onClick={() => { setShowHistory(true); fetchHistory(); }}
             className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm font-bold transition flex items-center gap-2"
           >
@@ -189,26 +268,55 @@ export default function Home() {
 
       {/* SIDEBAR / DRAWER */}
       {showHistory && (
-        <div className="fixed inset-0 z- flex justify-end">
-          {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/60" onClick={() => setShowHistory(false)} />
+        // We use z-[100] to ensure it is above EVERYTHING else on the page
+        <div className="fixed inset-0 z-100 flex justify-end">
           
-          {/* Panel */}
-          <div className="relative w-80 h-full bg-gray-950 border-l border-gray-800 p-6 overflow-y-auto">
-            <h2 className="text-xl font-bold mb-6">Translation History</h2>
-            <div className="flex flex-col gap-4">
-              {history.map((project) => (
-                <div 
-                  key={project.id}
-                  onClick={() => loadProject(project.id)}
-                  className="p-4 bg-gray-900 border border-gray-800 rounded-lg cursor-pointer hover:border-blue-500 transition"
-                >
-                  <p className="font-bold text-sm truncate">{project.title}</p>
-                  <p className="text-[10px] text-gray-500">
-                    {new Date(project.created_at).toLocaleDateString()}
-                  </p>
-                </div>
-              ))}
+          {/* Backdrop: This darkens the background and captures clicks */}
+          <div 
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity" 
+            onClick={() => setShowHistory(false)} 
+          />
+          
+          {/* Panel: The actual sidebar */}
+          <div className="relative w-80 h-full bg-gray-950 border-l border-gray-800 p-6 shadow-2xl overflow-y-auto">
+            <div className="flex justify-between items-center mb-8">
+              <h2 className="text-xl font-bold">History</h2>
+              <button 
+                onClick={() => setShowHistory(false)}
+                className="text-gray-500 hover:text-white transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {history.length === 0 ? (
+                <p className="text-gray-500 text-sm text-center mt-10">No projects yet.</p>
+              ) : (
+                history.map((project) => (
+                  <div 
+                    key={project.id}
+                    onClick={() => loadProject(project.id)}
+                    className="p-4 bg-gray-900 border border-gray-800 rounded-xl cursor-pointer hover:border-blue-500 hover:bg-gray-800 transition group"
+                  >
+                    <p className="font-bold text-sm truncate group-hover:text-blue-400 transition">
+                      {project.title}
+                    </p>
+                    <div className="flex justify-between items-center mt-2">
+                      <span className="text-[10px] text-gray-500 uppercase tracking-tighter">
+                        {new Date(project.created_at).toLocaleDateString()}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+                        project.status === 'completed' 
+                          ? 'border-green-900 text-green-500' 
+                          : 'border-yellow-900 text-yellow-500'
+                      }`}>
+                        {project.status}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

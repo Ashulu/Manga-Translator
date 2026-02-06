@@ -207,39 +207,28 @@ def save_page_to_supabase(project_id, page_number, image_cv, bubbles_json, width
 # --- ENDPOINTS ---
 
 @app.post("/process-page")
-async def process_page_pipeline(file: UploadFile = File(...), target_language: str = Form("English")):
+async def process_page_pipeline(
+    file: UploadFile = File(...), 
+    target_language: str = Form("English"),
+    project_id: str = Form(...) # <--- NOW REQUIRED FROM FRONTEND
+):
     content = await file.read()
     
-    # 1. Create a Project in the Database
-    # Since we don't have Auth yet, user_id is null
-    project_db = supabase.table("projects").insert({"title": file.filename}).execute()
-    project_id = project_db.data[0]['id']
-    print(f"📁 Created Project: {project_id}")
+    # We no longer insert a project here! The frontend already did it.
+    print(f"📁 Processing for existing Project: {project_id}")
 
-    # 2. Split PDF or use Image
     if file.filename.endswith(".pdf"):
         pages_images = convert_from_bytes(content)
     else:
         pages_images = [Image.open(io.BytesIO(content)).convert("RGB")]
 
-    results = []
-
-    # 3. The Processing Loop
     for i, page_image in enumerate(pages_images):
-        print(f"   Processing Page {i+1}...")
-        
-        # A. Run your existing processing logic (OCR, Translation, Inpaint)
-        # Note: I'm assuming your process_single_image returns a dict with 'bubbles' and 'cleaned_image_cv'
-        # Let's adjust process_single_image slightly to return the CV image directly
-        
         page_data = process_single_image(page_image, target_language)
         
-        # We need the CV image for the cleanup, let's extract it from the data
-        # (You might need to tweak process_single_image to return the raw CV image)
+        # Extract CV2 image for cleanup
         cleaned_cv = cv2.cvtColor(np.array(page_image), cv2.COLOR_RGB2BGR)
         cleaned_cv = cleanup_text(cleaned_cv, [b['box'] for b in page_data['bubbles']])
 
-        # B. SAVE TO CLOUD
         save_page_to_supabase(
             project_id=project_id,
             page_number=i + 1,
@@ -248,9 +237,7 @@ async def process_page_pipeline(file: UploadFile = File(...), target_language: s
             width=page_image.width,
             height=page_image.height
         )
-        
-        # For now, we still return the data to the frontend so it works immediately
-        results.append(page_data)
 
+    # Mark as completed
     supabase.table("projects").update({"status": "completed"}).eq("id", project_id).execute()
-    return {"project_id": project_id, "pages": results}
+    return {"status": "success"}
