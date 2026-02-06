@@ -41,6 +41,10 @@ export default function Home() {
 
   const [showAuthModal, setShowAuthModal] = useState(false);
 
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+
   // Check for active session on load
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -139,6 +143,22 @@ export default function Home() {
       .order('created_at', { ascending: false });
   
     if (data) setHistory(data);
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) { // Zoom on Ctrl/Cmd + Scroll
+      e.preventDefault();
+      const zoomSpeed = 0.001;
+      const delta = -e.deltaY;
+      const newScale = Math.min(Math.max(scale + delta * zoomSpeed, 0.1), 5);
+      setScale(newScale);
+    } else if (!isPanning) {
+      // Normal scroll moves the offset (Panning)
+      setOffset(prev => ({
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY
+      }));
+    }
   };
   
   // Fetch on load
@@ -308,240 +328,248 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-950 text-gray-100 p-8 flex flex-col items-center">
-      <h1 className="text-4xl font-bold mb-6 text-blue-400 flex items-center gap-3">
-        <ScanEye /> MangaPulse
-      </h1>
-
-      {/* --- CONTROLS BAR --- */}
-      <div className="flex flex-wrap gap-4 mb-6 justify-center w-full max-w-5xl">
-        
-        {/* Settings */}
-        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-4">
-          <div className="flex flex-col">
-            <label className="text-[10px] text-gray-500 uppercase font-bold">Font</label>
-            <select 
-              value={selectedFont} 
-              onChange={(e) => setSelectedFont(e.target.value)}
-              className="bg-transparent text-sm font-bold outline-none cursor-pointer"
-            >
-              <option value="font-anime">Anime Ace</option>
-              <option value="font-action">Action Man</option>
-              <option value="font-smack">Smack</option>
-            </select>
-          </div>
-          <div className="w-px h-8 bg-gray-700"></div>
-          <div className="flex flex-col">
-            <label className="text-[10px] text-gray-500 uppercase font-bold">Language</label>
-            <select 
-              value={targetLang} 
-              onChange={(e) => setTargetLang(e.target.value)}
-              className="bg-transparent text-sm font-bold outline-none cursor-pointer"
-            >
-              <option value="English">English</option>
-              <option value="Spanish">Spanish</option>
-              <option value="French">French</option>
-            </select>
+    <main className="h-screen w-full bg-[#0b0c10] text-gray-100 flex flex-col overflow-hidden font-sans selection:bg-blue-500/30">
+      
+      {/* --- 1. THE STUDIO HEADER --- */}
+      <header className="h-14 border-b border-white/5 bg-black/20 backdrop-blur-md flex items-center justify-between px-6 z-110 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-blue-400 font-black tracking-tighter text-xl">
+            <ScanEye size={24} />
+            <span>MangaPulse <span className="text-[10px] text-gray-500 font-mono tracking-normal ml-1 uppercase">Studio v1.0</span></span>
           </div>
         </div>
-
-        {/* Actions */}
-        <div className="bg-gray-900 p-3 rounded-lg border border-gray-800 flex items-center gap-3">
-          <button 
-            onClick={handleSignOut}
-            className="px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition"
-          >
-            Sign Out
-          </button>
-          <button 
-            onClick={() => { setShowHistory(true); fetchHistory(); }}
-            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm font-bold transition flex items-center gap-2"
-          >
-            <ScanEye size={16} /> My History
-          </button>
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-bold transition"
-          >
-            <Upload size={16}/> Upload PDF/IMG
-          </button>
-          
-          {currentPage && (
-            <button 
-              onClick={handleDownloadCurrentPage}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-bold transition"
-            >
-              <Download size={16}/> Save Page
-            </button>
+  
+        <div className="flex items-center gap-6">
+          {user && (
+            <>
+              <div className="flex items-center gap-4 border-r border-white/10 pr-6 mr-2">
+                 <div className="flex flex-col">
+                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Typography</label>
+                    <select 
+                      value={selectedFont} 
+                      onChange={(e) => setSelectedFont(e.target.value)}
+                      className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition"
+                    >
+                      <option value="font-anime">Anime Ace</option>
+                      <option value="font-action">Action Man</option>
+                      <option value="font-smack">Smack Attack</option>
+                    </select>
+                 </div>
+                 <div className="flex flex-col">
+                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Language</label>
+                    <select 
+                      value={targetLang} 
+                      onChange={(e) => setTargetLang(e.target.value)}
+                      className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition"
+                    >
+                      <option value="English">English</option>
+                      <option value="Spanish">Spanish</option>
+                      <option value="French">French</option>
+                    </select>
+                 </div>
+              </div>
+  
+              <button onClick={() => { setShowHistory(true); fetchHistory(); }} className="text-xs font-bold hover:text-blue-400 transition">History</button>
+              <button onClick={handleSignOut} className="text-xs font-bold text-gray-500 hover:text-red-400 transition">Sign Out</button>
+              
+              <div className="flex gap-2 ml-4">
+                {currentPage && (
+                  <button 
+                    onClick={handleDownloadCurrentPage}
+                    className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded-lg text-xs font-black transition"
+                  >
+                    <Download size={14}/> Export
+                  </button>
+                )}
+                <button 
+                  onClick={() => fileInputRef.current?.click()} 
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-black transition"
+                >
+                  Upload
+                </button>
+              </div>
+            </>
           )}
         </div>
-      </div>
-
-      {/* SIDEBAR / DRAWER */}
-      {showHistory && (
-        // We use z-[100] to ensure it is above EVERYTHING else on the page
-        <div className="fixed inset-0 z-100 flex justify-end">
-          
-          {/* Backdrop: This darkens the background and captures clicks */}
-          <div 
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity" 
-            onClick={() => setShowHistory(false)} 
-          />
-          
-          {/* Panel: The actual sidebar */}
-          <div className="relative w-80 h-full bg-gray-950 border-l border-gray-800 p-6 shadow-2xl overflow-y-auto">
-            <div className="flex justify-between items-center mb-8">
-              <h2 className="text-xl font-bold">History</h2>
-              <button 
-                onClick={() => setShowHistory(false)}
-                className="text-gray-500 hover:text-white transition"
+      </header>
+  
+      <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
+  
+      {/* --- 2. THE WORKSPACE --- */}
+      <div className="flex-1 flex overflow-hidden">
+        
+        {/* SIDEBAR: Filmstrip Navigation */}
+        <aside className="w-64 border-r border-white/5 bg-black/20 flex flex-col md:flex shrink-0">
+          <div className="p-4 border-b border-white/5 flex justify-between items-center">
+            <span className="text-[10px] uppercase font-black text-gray-500 tracking-widest">Chapter Pages</span>
+            <span className="text-[10px] font-mono text-gray-600">{pages.length} total</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+            {pages.map((p, idx) => (
+              <div 
+                key={idx} 
+                onClick={() => { setCurrentPageIndex(idx); setEditingIndex(null); }}
+                className={`group relative aspect-2/3 w-full rounded-lg border-2 transition-all cursor-pointer overflow-hidden ${currentPageIndex === idx ? 'border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.2)]' : 'border-white/5 hover:border-white/20'}`}
               >
-                ✕
-              </button>
+                 <div className="absolute inset-0 bg-black/40 group-hover:bg-transparent transition-colors z-10" />
+                 <img src={p.cleaned_image} className="w-full h-full object-cover" />
+                 <div className="absolute bottom-2 left-2 z-20 bg-black/60 px-2 py-0.5 rounded text-[10px] font-mono text-white">
+                    {idx + 1}
+                 </div>
+              </div>
+            ))}
+            {pages.length === 0 && (
+              <div className="text-center py-20 opacity-20 flex flex-col items-center gap-2">
+                 <Upload size={32} />
+                 <span className="text-xs uppercase font-bold tracking-tighter">Empty Rack</span>
+              </div>
+            )}
+          </div>
+        </aside>
+  
+        {/* THE STAGE: The Canvas Area */}
+        <section 
+          className="flex-1 relative bg-[#111216] overflow-hidden cursor-grab active:cursor-grabbing"
+          onWheel={handleWheel}
+          onMouseDown={() => setIsPanning(true)}
+          onMouseUp={() => setIsPanning(false)}
+          onMouseMove={(e) => {
+            if (isPanning) {
+              setOffset(prev => ({ x: prev.x + e.movementX, y: prev.y + e.movementY }));
+            }
+          }}
+        >
+          {/* The Transform Layer */}
+          <div 
+            className="absolute inset-0 flex items-center justify-center transition-transform duration-75 ease-out"
+            style={{
+              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+              transformOrigin: 'center',
+            }}
+          >
+            {currentPage ? (
+              <div 
+                ref={containerRef} 
+                className="relative shadow-[0_40px_100px_rgba(0,0,0,0.7)] bg-white"
+              >
+                <img 
+                  src={currentPage.cleaned_image} 
+                  alt="Manga Page" 
+                  className="w-full h-auto block max-w-none" 
+                  style={{ width: currentPage.original_size.width / 2 }} // Base size
+                />
+
+                {currentPage.bubbles.map((bubble, i) => {
+                  const [x1, y1, x2, y2] = bubble.box;
+                  const { width: origW, height: origH } = currentPage.original_size;
+                  
+                  const left = (x1 / origW) * 100;
+                  const top = (y1 / origH) * 100;
+                  const width = ((x2 - x1) / origW) * 100;
+                  const height = ((y2 - y1) / origH) * 100;
+
+                  return (
+                    <div
+                      key={i}
+                      onClick={(e) => { e.stopPropagation(); setEditingIndex(i); }}
+                      className={`absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden 
+                                  uppercase tracking-tight leading-none ${selectedFont} 
+                                  ${editingIndex === i ? 'ring-2 ring-blue-500 bg-white/95 z-50' : ''}`}
+                      style={{
+                        left: `${left}%`,
+                        top: `${top}%`,
+                        width: `${width}%`,
+                        height: `${height}%`,
+                        containerType: 'size',
+                        
+                        // IMPROVED TYPESETTING LOGIC:
+                        // 1. We lowered the min-size to 4px for tiny labels.
+                        // 2. We use 'cqw' to ensure text doesn't overflow width-wise.
+                        fontSize: 'clamp(4px, 15cqw, 20px)', 
+                        
+                        wordBreak: 'break-word',
+                        hyphens: 'auto',
+                        textWrap: 'balance',
+                        textShadow: editingIndex === i ? 'none' : '0px 0px 2px white',
+                      }}
+                    >
+                      {editingIndex === i ? (
+                        <textarea
+                          autoFocus
+                          value={bubble.translated}
+                          onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
+                          onBlur={() => setEditingIndex(null)}
+                          className="w-full h-full bg-transparent border-none outline-none resize-none text-center p-0"
+                          style={{ fontSize: 'inherit', fontFamily: 'inherit' }}
+                        />
+                      ) : (
+                        <span className="w-full">{bubble.translated}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center text-gray-700 select-none">
+                <ScanEye size={120} className="mb-6 opacity-5" />
+                <p className="text-xs font-black uppercase tracking-[0.4em] opacity-20">Workspace Standby</p>
+                <p className="text-[10px] text-gray-800 mt-4 max-w-50 text-center leading-relaxed font-mono">
+                  UPLOAD A PROJECT OR SELECT FROM HISTORY TO INITIALIZE CANVAS
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Floating Zoom Controls (UI Juice) */}
+          <div className="absolute bottom-6 right-6 flex items-center gap-2 bg-black/40 backdrop-blur-md p-2 rounded-xl border border-white/10 z-120">
+            <button onClick={() => setScale(s => Math.max(s - 0.2, 0.2))} className="p-2 hover:bg-white/10 rounded-lg">-</button>
+            <span className="text-[10px] font-mono w-12 text-center">{Math.round(scale * 100)}%</span>
+            <button onClick={() => setScale(s => Math.min(s + 0.2, 5))} className="p-2 hover:bg-white/10 rounded-lg">+</button>
+            <div className="w-px h-4 bg-white/10 mx-1" />
+            <button onClick={() => { setScale(1); setOffset({x:0, y:0}); }} className="text-[10px] font-bold px-2 uppercase">Reset</button>
+          </div>
+        </section>
+      </div>
+  
+      {/* --- 3. THE STUDIO FOOTER --- */}
+      <footer className="h-8 border-t border-white/5 bg-black/40 flex items-center justify-between px-6 text-[10px] font-mono text-gray-500 z-110">
+          <div className="flex gap-6">
+            <div className="flex items-center gap-2">
+              <div className={`w-1.5 h-1.5 rounded-full ${loading ? 'bg-yellow-500 animate-pulse' : 'bg-green-500'}`} />
+              <span>SYSTEM: {loading ? 'PROCESSING' : 'IDLE'}</span>
             </div>
-
+            <span>PAGE_ID: {currentPageIndex + 1}/{pages.length}</span>
+            {currentPage && <span>RES: {currentPage.original_size.width}x{currentPage.original_size.height}</span>}
+          </div>
+          <div className="flex gap-6">
+            <span className="text-blue-500/50">ENGINE: GEMINI-1.5-FLASH</span>
+            <span>FPS: 60</span>
+          </div>
+      </footer>
+  
+      {/* HISTORY SIDEBAR (Keep your existing history logic here) */}
+      {showHistory && (
+        <div className="fixed inset-0 z-200 flex justify-end">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowHistory(false)} />
+          <div className="relative w-80 h-full bg-gray-950 border-l border-white/10 p-6 overflow-y-auto">
+            <div className="flex justify-between items-center mb-8">
+              <h2 className="text-xl font-black uppercase tracking-tighter">History</h2>
+              <button onClick={() => setShowHistory(false)} className="text-gray-500 hover:text-white"><X /></button>
+            </div>
             <div className="flex flex-col gap-3">
-              {history.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center mt-10">No projects yet.</p>
-              ) : (
-                history.map((project) => (
-                  <div 
-                    key={project.id}
-                    onClick={() => loadProject(project.id)}
-                    // Added 'relative' and 'flex-col' to keep everything contained
-                    className="p-4 bg-gray-900 border border-gray-800 rounded-xl cursor-pointer hover:border-blue-500 hover:bg-gray-800 transition group relative flex flex-col gap-1"
-                  >
-                    <div className="flex justify-between items-start gap-2">
-                      {/* Title Container */}
-                      <p className="font-bold text-sm truncate flex-1 group-hover:text-blue-400 transition">
-                        {project.title}
-                      </p>
-
-                      {/* DELETE BUTTON: Contained within the flex header of the card */}
-                      <button 
-                        onClick={(e) => deleteProject(e, project.id)}
-                        className="text-gray-600 hover:text-red-500 transition p-1 -mr-1"
-                        title="Delete Project"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                    
-                    <div className="flex justify-between items-center mt-1">
-                      <span className="text-[10px] text-gray-500 uppercase tracking-tighter">
-                        {new Date(project.created_at).toLocaleDateString()}
-                      </span>
-                      
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
-                        project.status === 'completed' 
-                          ? 'border-green-900/30 text-green-500 bg-green-500/5' 
-                          : 'border-yellow-900/30 text-yellow-500 bg-yellow-500/5'
-                      }`}>
-                        {project.status}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
+              {history.map((project) => (
+                <div 
+                  key={project.id}
+                  onClick={() => loadProject(project.id)}
+                  className="p-4 bg-gray-900/50 border border-white/5 rounded-xl cursor-pointer hover:border-blue-500 transition group relative"
+                >
+                  <button onClick={(e) => deleteProject(e, project.id)} className="absolute top-2 right-2 text-gray-700 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><Trash2 size={14} /></button>
+                  <p className="font-bold text-sm truncate pr-4">{project.title}</p>
+                  <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">{new Date(project.created_at).toLocaleDateString()}</p>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
-      )}
-
-      <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
-
-      {loading && (
-        <div className="flex flex-col items-center gap-2 text-blue-400 mb-8 animate-pulse">
-          <Loader2 className="animate-spin w-8 h-8" />
-          <span className="text-lg">Processing... (PDFs take time!)</span>
-        </div>
-      )}
-
-      {/* --- PAGINATION CONTROLS --- */}
-      {pages.length > 0 && (
-        <div className="flex items-center gap-4 mb-4">
-          <button 
-            disabled={currentPageIndex === 0}
-            onClick={() => setCurrentPageIndex(p => p - 1)}
-            className="p-2 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50"
-          >
-            <ChevronLeft />
-          </button>
-          <span className="font-mono font-bold">
-            Page {currentPageIndex + 1} of {pages.length}
-          </span>
-          <button 
-            disabled={currentPageIndex === pages.length - 1}
-            onClick={() => setCurrentPageIndex(p => p + 1)}
-            className="p-2 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-50"
-          >
-            <ChevronRight />
-          </button>
-        </div>
-      )}
-
-      {/* --- CANVAS --- */}
-      {currentPage && (
-        <div 
-          ref={containerRef}
-          className="relative w-full max-w-4xl border border-gray-800 shadow-2xl bg-white"
-        >
-          <img 
-            src={currentPage.cleaned_image} 
-            alt="Manga Page" 
-            className="w-full h-auto block"
-          />
-
-          {currentPage.bubbles.map((bubble, i) => {
-            const [x1, y1, x2, y2] = bubble.box;
-            // Use server-provided original dimensions for perfect scaling
-            const { width: origW, height: origH } = currentPage.original_size;
-            
-            const left = (x1 / origW) * 100;
-            const top = (y1 / origH) * 100;
-            const width = ((x2 - x1) / origW) * 100;
-            const height = ((y2 - y1) / origH) * 100;
-
-            const isEditing = editingIndex === i;
-
-            return (
-              <div
-                key={i}
-                onClick={() => setEditingIndex(i)}
-                className={`absolute text-black flex items-center justify-center text-center p-1 z-10 overflow-hidden 
-                            uppercase tracking-wider ${selectedFont} 
-                            ${isEditing ? 'cursor-text ring-2 ring-blue-500 bg-white/90 z-50' : 'cursor-pointer hover:bg-white/10'}`}
-                style={{
-                  left: `${left}%`,
-                  top: `${top}%`,
-                  width: `${width}%`,
-                  height: `${height}%`,
-                  containerType: 'size',
-                  fontSize: 'clamp(9px, 12cqmin, 16px)',
-                  lineHeight: '1.0',
-                  overflowWrap: 'anywhere',
-                  textWrap: 'balance',
-                  textShadow: isEditing ? 'none' : '0px 0px 3px white, 0px 0px 3px white',
-                }}
-              >
-                {isEditing ? (
-                  <textarea
-                    autoFocus
-                    value={bubble.translated}
-                    onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
-                    onBlur={() => setEditingIndex(null)}
-                    onKeyDown={(e) => {
-                      if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setEditingIndex(null); }
-                    }}
-                    className="w-full h-full bg-transparent border-none outline-none resize-none text-center"
-                    style={{ fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit' }}
-                  />
-                ) : (
-                   <span className="w-full">{bubble.translated}</span>
-                )}
-              </div>
-            );
-          })}
         </div>
       )}
     </main>
