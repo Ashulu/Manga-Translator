@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight, Trash2, X, Save } from 'lucide-react';
+import { toKana } from 'wanakana';
+import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight, Trash2, X, Save, Pencil } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { supabase } from '@/lib/supabase';
 
@@ -28,6 +29,45 @@ interface PageResult {
   raw_image_url?: string;
   original_size: { width: number; height: number };
   project_id: string;
+}
+
+interface GlossaryItem {
+  id?: string;
+  japanese: string;
+  english: string;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function segmentByGlossaryTerms(
+  text: string,
+  glossary: GlossaryItem[]
+): Array<{ type: 'plain' | 'term'; text: string }> {
+  if (!text || glossary.length === 0) return [{ type: 'plain', text }];
+  const terms = glossary
+    .map((g) => g.english)
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => b.length - a.length);
+  if (terms.length === 0) return [{ type: 'plain', text }];
+  const pattern = terms.map(escapeRegex).join('|');
+  const regex = new RegExp(`(${pattern})`, 'gi');
+  const segments: Array<{ type: 'plain' | 'term'; text: string }> = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'plain', text: text.slice(lastIndex, match.index) });
+    }
+    segments.push({ type: 'term', text: match[1] });
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    segments.push({ type: 'plain', text: text.slice(lastIndex) });
+  }
+  return segments.length ? segments : [{ type: 'plain', text }];
 }
 
 export default function Home() {
@@ -80,6 +120,9 @@ export default function Home() {
 
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [showGlobalTermModal, setShowGlobalTermModal] = useState(false);
+  const [globalTermSelected, setGlobalTermSelected] = useState<GlossaryItem | null>(null);
+  const [globalTermNewValue, setGlobalTermNewValue] = useState("");
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,9 +182,22 @@ export default function Home() {
     });
   }, [editingIndex, scale, offset]);
 
-  const [glossary, setGlossary] = useState<{japanese: string, english: string}[]>([]);
+  const [glossary, setGlossary] = useState<GlossaryItem[]>([]);
   const [newTerm, setNewTerm] = useState({ jp: '', en: '' });
+  const [editingGlossaryItem, setEditingGlossaryItem] = useState<GlossaryItem | null>(null);
+  const [romajiMode, setRomajiMode] = useState(true);
   const [activeTab, setActiveTab] = useState<'pages' | 'glossary'>('pages');
+
+  const ocrJapaneseOptions = useMemo(() => {
+    const set = new Set<string>();
+    pages.forEach((p) =>
+      p.bubbles.forEach((b) => {
+        const t = b.japanese?.trim();
+        if (t) set.add(t);
+      })
+    );
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
+  }, [pages]);
 
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -389,11 +445,20 @@ export default function Home() {
     if (!paletteQuery) return [];
   
     const results: any[] = [];
-    const q = paletteQuery.toLowerCase();
+    const q = paletteQuery.toLowerCase().trim();
   
     // A. Static Commands
     if ("export save download".includes(q)) {
       results.push({ type: 'command', label: 'Export Current Page', action: handleDownloadCurrentPage, icon: <Download size={14}/> });
+    }
+    if (("update global term replace".includes(q) || q === "term") && pages.length > 0) {
+      results.push({
+        type: 'command',
+        label: 'Update Global Term',
+        sublabel: glossary.length > 0 ? 'Replace a glossary term in every bubble' : 'Add terms in Glossary tab first',
+        action: () => { setShowGlobalTermModal(true); setIsPaletteOpen(false); setPaletteQuery(""); },
+        icon: <Save size={14}/>
+      });
     }
   
     // B. Page Navigation
@@ -430,28 +495,109 @@ export default function Home() {
   const fetchGlossary = async (projectId: string) => {
     const { data } = await supabase
       .from('glossary_items')
-      .select('japanese, english')
+      .select('id, japanese, english')
       .eq('project_id', projectId);
     if (data) setGlossary(data);
   };
   
   const addGlossaryTerm = async () => {
     if (!newTerm.jp || !newTerm.en || !pages.length) return;
-    
-    const currentProjectId = history.find(p => p.id === pages[0]?.project_id)?.id; // Or track currentProjectId in state
+  
+    if (editingGlossaryItem?.id) {
+      const { error } = await supabase
+        .from('glossary_items')
+        .update({ japanese: newTerm.jp, english: newTerm.en })
+        .eq('id', editingGlossaryItem.id);
+      if (!error) {
+        await fetchGlossary(pages[0].project_id);
+        setNewTerm({ jp: '', en: '' });
+        setEditingGlossaryItem(null);
+      } else {
+        alert('Failed to update term.');
+      }
+      return;
+    }
   
     const { error } = await supabase
       .from('glossary_items')
-      .insert({ 
-        project_id: pages[0].project_id, // Ensure your PageResult interface has project_id
-        japanese: newTerm.jp, 
-        english: newTerm.en 
+      .insert({
+        project_id: pages[0].project_id,
+        japanese: newTerm.jp,
+        english: newTerm.en,
       });
   
     if (!error) {
-      setGlossary([...glossary, { japanese: newTerm.jp, english: newTerm.en }]);
+      await fetchGlossary(pages[0].project_id);
       setNewTerm({ jp: '', en: '' });
     }
+  };
+
+  const deleteGlossaryItem = async (item: GlossaryItem) => {
+    if (!item.id || !pages.length) return;
+    if (!confirm(`Remove "${item.english}" from the glossary?`)) return;
+    const { error } = await supabase.from('glossary_items').delete().eq('id', item.id);
+    if (!error) {
+      setGlossary((prev) => prev.filter((g) => g.id !== item.id));
+      if (editingGlossaryItem?.id === item.id) {
+        setEditingGlossaryItem(null);
+        setNewTerm({ jp: '', en: '' });
+      }
+    } else {
+      alert('Failed to delete term.');
+    }
+  };
+
+  const runGlobalTermReplace = async () => {
+    if (!globalTermSelected || !globalTermNewValue.trim() || !globalTermSelected.id) return;
+    const oldVal = globalTermSelected.english;
+    const newVal = globalTermNewValue.trim();
+    const glossaryJapanese = globalTermSelected.japanese?.trim() ?? '';
+    try {
+      let updatedPages: PageResult[];
+      if (oldVal !== newVal) {
+        await supabase
+          .from('glossary_items')
+          .update({ english: newVal })
+          .eq('id', globalTermSelected.id);
+        setGlossary((prev) =>
+          prev.map((g) => (g.id === globalTermSelected.id ? { ...g, english: newVal } : g))
+        );
+        const oldValRegex = new RegExp(escapeRegex(oldVal), 'gi');
+        updatedPages = pages.map((page) => ({
+          ...page,
+          bubbles: page.bubbles.map((b) => ({
+            ...b,
+            translated: b.translated.replace(oldValRegex, newVal),
+          })),
+        }));
+      } else {
+        if (!glossaryJapanese) {
+          setShowGlobalTermModal(false);
+          setGlobalTermSelected(null);
+          setGlobalTermNewValue("");
+          return;
+        }
+        updatedPages = pages.map((page) => ({
+          ...page,
+          bubbles: page.bubbles.map((b) => ({
+            ...b,
+            translated: b.japanese?.trim() === glossaryJapanese ? newVal : b.translated,
+          })),
+        }));
+      }
+      setPages(updatedPages);
+      for (const page of updatedPages) {
+        if (page.id) {
+          await supabase.from('pages').update({ bubbles_json: page.bubbles }).eq('id', page.id);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to update term.");
+    }
+    setShowGlobalTermModal(false);
+    setGlobalTermSelected(null);
+    setGlobalTermNewValue("");
   };
 
   if (!user) {
@@ -690,32 +836,113 @@ export default function Home() {
               <div className="p-4 flex flex-col gap-4">
                 {/* Add Term Form */}
                 <div className="space-y-2 pb-4 border-b border-white/5">
-                  <input 
-                    placeholder="Japanese" 
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Japanese</label>
+                    <button
+                      type="button"
+                      onClick={() => setRomajiMode((m) => !m)}
+                      className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded transition ${
+                        romajiMode ? 'bg-blue-500/30 text-blue-400' : 'text-gray-500 hover:text-gray-400'
+                      }`}
+                      title={romajiMode ? 'Typing romaji converts to kana (e.g. watashi → わたし)' : 'Click to enable romaji conversion'}
+                    >
+                      Romaji {romajiMode ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <input
+                    placeholder={romajiMode ? 'Type romaji (e.g. watashi)' : 'Japanese'}
                     className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs outline-none focus:border-blue-500"
                     value={newTerm.jp}
-                    onChange={e => setNewTerm({...newTerm, jp: e.target.value})}
+                    onChange={(e) =>
+                      setNewTerm((prev) => ({
+                        ...prev,
+                        jp: romajiMode ? toKana(e.target.value, { IMEMode: 'toHiragana' }) : e.target.value,
+                      }))
+                    }
                   />
-                  <input 
-                    placeholder="English" 
+                  {ocrJapaneseOptions.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">From this project</p>
+                      <div className="max-h-24 overflow-y-auto space-y-0.5 custom-scrollbar">
+                        {ocrJapaneseOptions.slice(0, 20).map((text) => (
+                          <button
+                            key={text}
+                            type="button"
+                            onClick={() => setNewTerm((prev) => ({ ...prev, jp: text }))}
+                            className="w-full text-left px-2 py-1 rounded text-[11px] font-medium text-gray-300 hover:bg-white/10 hover:text-white truncate block"
+                            title={text}
+                          >
+                            {text}
+                          </button>
+                        ))}
+                        {ocrJapaneseOptions.length > 20 && (
+                          <p className="text-[9px] text-gray-500 px-2 py-0.5">+{ocrJapaneseOptions.length - 20} more</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest block">English</label>
+                  <input
+                    placeholder="Translation"
                     className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs outline-none focus:border-blue-500"
                     value={newTerm.en}
-                    onChange={e => setNewTerm({...newTerm, en: e.target.value})}
+                    onChange={(e) => setNewTerm((prev) => ({ ...prev, en: e.target.value }))}
                   />
-                  <button 
-                    onClick={addGlossaryTerm}
-                    className="w-full py-2 bg-blue-600 rounded text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition"
-                  >
-                    Add Term
-                  </button>
+                  <div className="flex gap-2">
+                    {editingGlossaryItem ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => { setEditingGlossaryItem(null); setNewTerm({ jp: '', en: '' }); }}
+                          className="flex-1 py-2 rounded text-[10px] font-black uppercase tracking-widest border border-white/20 hover:bg-white/10 transition"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={addGlossaryTerm}
+                          className="flex-1 py-2 bg-blue-600 rounded text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition"
+                        >
+                          Update term
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={addGlossaryTerm}
+                        className="w-full py-2 bg-blue-600 rounded text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition"
+                      >
+                        Add Term
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Glossary List */}
                 <div className="space-y-2">
                   {glossary.map((item, idx) => (
-                    <div key={idx} className="p-2 bg-white/5 rounded border border-white/5 flex flex-col">
+                    <div
+                      key={item.id ?? idx}
+                      className={`p-2 bg-white/5 rounded border flex flex-col group relative pr-14 ${editingGlossaryItem?.id === item.id ? 'border-blue-500/50 ring-1 ring-blue-500/30' : 'border-white/5'}`}
+                    >
                       <span className="text-gray-500 text-[10px] font-mono">{item.japanese}</span>
                       <span className="text-blue-400 text-xs font-bold">{item.english}</span>
+                      <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setEditingGlossaryItem(item); setNewTerm({ jp: item.japanese, en: item.english }); }}
+                          aria-label={`Edit ${item.english}`}
+                          className="p-1 rounded text-gray-500 hover:text-blue-400 hover:bg-white/10"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); deleteGlossaryItem(item); }}
+                          aria-label={`Delete ${item.english}`}
+                          className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-white/10"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -851,7 +1078,21 @@ export default function Home() {
                             style={{ fontSize: 'inherit', fontFamily: 'inherit', lineHeight: 'inherit' }}
                           />
                         ) : (
-                          <span className="w-full pointer-events-none">{bubble.translated}</span>
+                          <span className="w-full pointer-events-none">
+                            {segmentByGlossaryTerms(bubble.translated, glossary).map((seg, k) =>
+                              seg.type === 'term' ? (
+                                <span
+                                  key={k}
+                                  className="border-b border-dotted border-blue-400/50 cursor-help"
+                                  title="Glossary term"
+                                >
+                                  {seg.text}
+                                </span>
+                              ) : (
+                                <span key={k}>{seg.text}</span>
+                              )
+                            )}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -968,7 +1209,7 @@ export default function Home() {
             {currentPage && <span>RES: {currentPage.original_size.width}x{currentPage.original_size.height}</span>}
           </div>
           <div className="flex gap-6">
-            <span className="text-blue-500/50">ENGINE: GEMINI-1.5-FLASH</span>
+            <span className="text-blue-500/50">ENGINE: GEMINI-2.5-FLASH</span>
             <span>FPS: 60</span>
           </div>
       </footer>
@@ -1066,6 +1307,54 @@ export default function Home() {
               <span className="text-[9px] text-gray-600"><strong>ENTER</strong> to select</span>
               <span className="text-[9px] text-gray-600"><strong>P + #</strong> to jump to page</span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update Global Term modal */}
+      {showGlobalTermModal && (
+        <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { setShowGlobalTermModal(false); setGlobalTermSelected(null); setGlobalTermNewValue(""); }} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-gray-800 p-6 rounded-2xl shadow-2xl">
+            <button onClick={() => { setShowGlobalTermModal(false); setGlobalTermSelected(null); setGlobalTermNewValue(""); }} className="absolute top-4 right-4 text-gray-500 hover:text-white"><X size={20}/></button>
+            <h2 className="text-lg font-black mb-1">Update Global Term</h2>
+            <p className="text-gray-400 text-xs mb-4">Replace a glossary term in every bubble across all pages.</p>
+            {glossary.length === 0 ? (
+              <p className="text-sm text-gray-500 py-4">No glossary terms yet. Add terms in the <strong>Glossary</strong> tab, then use this to replace one everywhere.</p>
+            ) : (
+              <>
+            <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest block mb-2">Choose term</label>
+            <select
+              value={globalTermSelected?.english ?? ""}
+              onChange={(e) => {
+                const item = glossary.find((g) => g.english === e.target.value) ?? null;
+                setGlobalTermSelected(item);
+                setGlobalTermNewValue(item?.english ?? "");
+              }}
+              className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm outline-none focus:border-blue-500 mb-4"
+            >
+              <option value="">Select a term…</option>
+              {glossary.map((g) => (
+                <option key={g.id ?? g.japanese} value={g.english}>{g.english} ({g.japanese})</option>
+              ))}
+            </select>
+            <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest block mb-2">Replace with</label>
+            <input
+              type="text"
+              value={globalTermNewValue}
+              onChange={(e) => setGlobalTermNewValue(e.target.value)}
+              placeholder="New value"
+              className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm outline-none focus:border-blue-500 mb-4"
+            />
+            <button
+              onClick={runGlobalTermReplace}
+              disabled={!globalTermSelected || !globalTermNewValue.trim()}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-bold transition"
+            >
+              Replace everywhere
+            </button>
+              </>
+            )}
           </div>
         </div>
       )}
