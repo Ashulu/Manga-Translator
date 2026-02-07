@@ -182,40 +182,30 @@ def process_single_image(pil_image, target_language, glossary_items):
         "original_size": {"width": pil_image.width, "height": pil_image.height}
     }
 
-def save_page_to_supabase(project_id, page_number, image_cv, bubbles_json, width, height):
-    """
-    1. Uploads cleaned image to Supabase Storage
-    2. Saves the page metadata and bubbles to the Database
-    """
-    # 1. Convert OpenCV image to bytes
-    _, buffer = cv2.imencode('.jpg', image_cv)
-    image_bytes = buffer.tobytes()
+def save_page_to_supabase(project_id, page_number, cleaned_cv, raw_cv, bubbles_json, width, height):
+    # 1. Upload Cleaned
+    _, buffer_c = cv2.imencode('.jpg', cleaned_cv)
+    c_path = f"{project_id}/page_{page_number}_clean.jpg"
+    supabase.storage.from_("manga-images").upload(c_path, buffer_c.tobytes(), {"content-type": "image/jpeg"})
+    cleaned_url = supabase.storage.from_("manga-images").get_public_url(c_path)
 
-    # 2. Upload to Storage
-    file_path = f"{project_id}/page_{page_number}.jpg"
-    
-    # We use 'upsert' so we can overwrite if we re-process
-    storage_response = supabase.storage.from_("manga-images").upload(
-        path=file_path,
-        file=image_bytes,
-        file_options={"content-type": "image/jpeg"}
-    )
+    # 2. Upload Raw
+    _, buffer_r = cv2.imencode('.jpg', raw_cv)
+    r_path = f"{project_id}/page_{page_number}_raw.jpg"
+    supabase.storage.from_("manga-images").upload(r_path, buffer_r.tobytes(), {"content-type": "image/jpeg"})
+    raw_url = supabase.storage.from_("manga-images").get_public_url(r_path)
 
-    # 3. Get the Public URL
-    image_url = supabase.storage.from_("manga-images").get_public_url(file_path)
-
-    # 4. Insert into 'pages' table
+    # 3. Save to DB
     page_data = {
         "project_id": project_id,
         "page_number": page_number,
-        "image_url": image_url,
+        "image_url": cleaned_url, # Cleaned
+        "raw_image_url": raw_url, # Raw
         "bubbles_json": bubbles_json,
         "width": width,
         "height": height
     }
-    
-    db_response = supabase.table("pages").insert(page_data).execute()
-    return db_response.data
+    supabase.table("pages").insert(page_data).execute()
 
 # --- ENDPOINTS ---
 
@@ -245,13 +235,14 @@ async def process_page_pipeline(
         page_data = process_single_image(page_image, target_language, glossary_items)
         
         # Extract CV2 image for cleanup
-        cleaned_cv = cv2.cvtColor(np.array(page_image), cv2.COLOR_RGB2BGR)
-        cleaned_cv = cleanup_text(cleaned_cv, [b['box'] for b in page_data['bubbles']])
+        raw_cv = cv2.cvtColor(np.array(page_image), cv2.COLOR_RGB2BGR)
+        cleaned_cv = cleanup_text(raw_cv, [b['box'] for b in page_data['bubbles']])
 
         save_page_to_supabase(
             project_id=project_id,
             page_number=i + 1,
-            image_cv=cleaned_cv,
+            cleaned_cv=cleaned_cv,
+            raw_cv=raw_cv,
             bubbles_json=page_data['bubbles'],
             width=page_image.width,
             height=page_image.height

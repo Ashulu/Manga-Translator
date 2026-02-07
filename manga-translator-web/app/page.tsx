@@ -15,6 +15,7 @@ interface Bubble {
 interface PageResult {
   bubbles: Bubble[];
   cleaned_image: string;
+  raw_image_url?: string;
   original_size: { width: number; height: number };
   project_id: string;
 }
@@ -59,6 +60,10 @@ export default function Home() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
 
+  const [curtainX, setCurtainX] = useState(50);
+  const [isGhosting, setIsGhosting] = useState(false);
+  const [isDraggingCurtain, setIsDraggingCurtain] = useState(false);
+
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
 
@@ -83,9 +88,49 @@ export default function Home() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsGhosting(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsGhosting(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isDraggingCurtain) return;
+    const handleMouseUp = () => setIsDraggingCurtain(false);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => window.removeEventListener('mouseup', handleMouseUp);
+  }, [isDraggingCurtain]);
+
   const [glossary, setGlossary] = useState<{japanese: string, english: string}[]>([]);
   const [newTerm, setNewTerm] = useState({ jp: '', en: '' });
   const [activeTab, setActiveTab] = useState<'pages' | 'glossary'>('pages');
+
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    // When cursor is over the manga stage: block browser/tab zoom (Ctrl+scroll or pinch)
+    // so only the manga page zooms. Use capture so we run before the browser.
+    const preventBrowserZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+
+    stage.addEventListener('wheel', preventBrowserZoom, { passive: false, capture: true });
+    return () => stage.removeEventListener('wheel', preventBrowserZoom, { capture: true });
+  }, []);
 
   // Auth Functions
   const handleAuth = async (e: React.FormEvent) => {
@@ -181,14 +226,24 @@ export default function Home() {
   };
 
   const handleWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) { // Zoom on Ctrl/Cmd + Scroll
+    // Check if it's a pinch gesture or Ctrl+Wheel
+    // Trackpads send e.ctrlKey = true during a pinch
+    if (e.ctrlKey) {
       e.preventDefault();
-      const zoomSpeed = 0.001;
+      
+      // Sensitivity adjustment for trackpads vs mice
+      const zoomSpeed = 0.01; 
       const delta = -e.deltaY;
+      
+      // Calculate new scale
       const newScale = Math.min(Math.max(scale + delta * zoomSpeed, 0.1), 5);
+      
+      // OPTIONAL: Zoom toward mouse position logic
+      // For a simple studio feel, we'll keep it centered for now, 
+      // but we can add 'zoom-to-cursor' later if you like the feel.
       setScale(newScale);
-    } else if (!isPanning) {
-      // Normal scroll moves the offset (Panning)
+    } else {
+      // Normal Panning (Two-finger slide on trackpad or regular wheel)
       setOffset(prev => ({
         x: prev.x - e.deltaX,
         y: prev.y - e.deltaY
@@ -216,6 +271,7 @@ export default function Home() {
       const formattedPages = pagesData.map(p => ({
         bubbles: p.bubbles_json,
         cleaned_image: p.image_url,
+        raw_image_url: p.raw_image_url ?? undefined,
         original_size: { width: p.width, height: p.height },
         project_id: p.project_id
       }));
@@ -524,8 +580,36 @@ export default function Home() {
 
           <div className="flex-1 overflow-y-auto custom-scrollbar">
             {activeTab === 'pages' ? (
-              <div className="p-4 space-y-4">
-                {/* ... YOUR EXISTING PAGES MAP ... */}
+              <div className="p-4 space-y-3">
+                {pages.length === 0 ? (
+                  <p className="text-[10px] text-gray-500 uppercase tracking-widest text-center py-8">
+                    No pages loaded. Upload a manga or select from History.
+                  </p>
+                ) : (
+                  pages.map((page, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setCurrentPageIndex(idx)}
+                      className={`w-full block rounded-lg overflow-hidden border-2 transition text-left focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-[#0b0c10] ${
+                        currentPageIndex === idx
+                          ? 'border-blue-400 ring-1 ring-blue-400/50'
+                          : 'border-white/10 hover:border-white/20'
+                      }`}
+                    >
+                      <div className="aspect-3/4 bg-white/5 relative">
+                        <img
+                          src={page.cleaned_image}
+                          alt={`Page ${idx + 1}`}
+                          className="w-full h-full object-cover object-top"
+                        />
+                        <span className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-black/70 text-[10px] font-mono font-bold text-white rounded">
+                          {idx + 1}
+                        </span>
+                      </div>
+                    </button>
+                  ))
+                )}
               </div>
             ) : (
               <div className="p-4 flex flex-col gap-4">
@@ -567,12 +651,17 @@ export default function Home() {
   
         {/* THE STAGE: The Canvas Area */}
         <section 
+          ref={stageRef}
           className="flex-1 relative bg-[#111216] overflow-hidden cursor-grab active:cursor-grabbing"
           onWheel={handleWheel}
           onMouseDown={() => setIsPanning(true)}
           onMouseUp={() => setIsPanning(false)}
           onMouseMove={(e) => {
-            if (isPanning) {
+            if (isDraggingCurtain && containerRef.current) {
+              const rect = containerRef.current.getBoundingClientRect();
+              const pct = ((e.clientX - rect.left) / rect.width) * 100;
+              setCurtainX(Math.min(100, Math.max(0, pct)));
+            } else if (isPanning) {
               setOffset(prev => ({ x: prev.x + e.movementX, y: prev.y + e.movementY }));
             }
           }}
@@ -590,13 +679,45 @@ export default function Home() {
                 ref={containerRef} 
                 className="relative shadow-[0_40px_100px_rgba(0,0,0,0.7)] bg-white"
               >
-                <img 
-                  src={currentPage.cleaned_image} 
-                  alt="Manga Page" 
-                  className="w-full h-auto block max-w-none" 
-                  style={{ width: currentPage.original_size.width / 2 }} // Base size
-                />
+                {/* Image layer(s): raw (bottom) + cleaned (top, optional clip for curtain) */}
+                {currentPage.raw_image_url ? (
+                  <>
+                    <img
+                      src={currentPage.raw_image_url}
+                      alt="Original"
+                      className="block max-w-none w-full h-auto pointer-events-none"
+                      style={{ width: currentPage.original_size.width / 2 }}
+                    />
+                    <img
+                      src={currentPage.cleaned_image}
+                      alt="Translated"
+                      className="absolute left-0 top-0 block max-w-none pointer-events-none"
+                      style={{
+                        width: currentPage.original_size.width / 2,
+                        clipPath: `inset(0 ${100 - curtainX}% 0 0)`,
+                      }}
+                    />
+                  </>
+                ) : (
+                  <img
+                    src={currentPage.cleaned_image}
+                    alt="Manga Page"
+                    className="w-full h-auto block max-w-none"
+                    style={{ width: currentPage.original_size.width / 2 }}
+                  />
+                )}
 
+                {/* Bubbles: only visible on translated side (same clip as cleaned); ghost opacity when Shift held */}
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    opacity: currentPage.raw_image_url && isGhosting ? 0.4 : 1,
+                    transition: 'opacity 0.15s ease',
+                    ...(currentPage.raw_image_url && {
+                      clipPath: `inset(0 ${100 - curtainX}% 0 0)`,
+                    }),
+                  }}
+                >
                 {currentPage.bubbles.map((bubble, i) => {
                   const [x1, y1, x2, y2] = bubble.box;
                   const { width: origW, height: origH } = currentPage.original_size;
@@ -655,6 +776,22 @@ export default function Home() {
                     </div>
                   );
                 })}
+                </div>
+
+                {/* Curtain slider: drag to compare raw vs cleaned (only when raw exists) */}
+                {currentPage.raw_image_url && (
+                  <div
+                    className="absolute top-0 bottom-0 z-100 flex items-center pointer-events-auto"
+                    style={{ left: `${curtainX}%`, transform: 'translateX(-50%)' }}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      setIsDraggingCurtain(true);
+                    }}
+                  >
+                    <div className="w-1.5 h-full bg-blue-400/90 rounded-full shadow-lg hover:bg-blue-400 transition-colors" />
+                    <div className="absolute inset-y-0 -left-2 -right-2 cursor-ew-resize" aria-label="Drag to compare original and translated" />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center text-gray-700 select-none">
