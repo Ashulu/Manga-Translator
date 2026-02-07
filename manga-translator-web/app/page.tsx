@@ -1,18 +1,28 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Upload, ScanEye, Loader2, Download, ChevronLeft, ChevronRight, Trash2, X, Save } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { supabase } from '@/lib/supabase';
 
+interface BubbleStyle {
+  fontSize?: number;
+  fontWeight?: string;
+  fontColor?: string;
+  fontFamily?: string;
+  textAlign?: 'left' | 'center' | 'right';
+}
+
 interface Bubble {
-  box: [number, number, number, number]; 
+  box: [number, number, number, number];
   japanese: string;
   translated: string;
+  style?: BubbleStyle;
 }
 
 interface PageResult {
+  id?: string;
   bubbles: Bubble[];
   cleaned_image: string;
   raw_image_url?: string;
@@ -32,6 +42,9 @@ export default function Home() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const editingBubbleRef = useRef<HTMLDivElement | null>(null);
+  const floatingBarRef = useRef<HTMLDivElement | null>(null);
+  const [toolbarPosition, setToolbarPosition] = useState<{ top: number; left: number } | null>(null);
 
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -61,6 +74,7 @@ export default function Home() {
   const [isPanning, setIsPanning] = useState(false);
 
   const [curtainX, setCurtainX] = useState(50);
+  const [showCurtain, setShowCurtain] = useState(false);
   const [isGhosting, setIsGhosting] = useState(false);
   const [isDraggingCurtain, setIsDraggingCurtain] = useState(false);
 
@@ -109,6 +123,21 @@ export default function Home() {
     window.addEventListener('mouseup', handleMouseUp);
     return () => window.removeEventListener('mouseup', handleMouseUp);
   }, [isDraggingCurtain]);
+
+  useLayoutEffect(() => {
+    if (editingIndex === null) {
+      setToolbarPosition(null);
+      return;
+    }
+    const el = editingBubbleRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const toolbarHeight = 40;
+    setToolbarPosition({
+      left: rect.left + rect.width / 2,
+      top: rect.top - toolbarHeight / 2 - 10
+    });
+  }, [editingIndex, scale, offset]);
 
   const [glossary, setGlossary] = useState<{japanese: string, english: string}[]>([]);
   const [newTerm, setNewTerm] = useState({ jp: '', en: '' });
@@ -203,6 +232,38 @@ export default function Home() {
     setPages(newPages);
   };
 
+  const updateBubbleStyle = useCallback((pageIndex: number, bubbleIndex: number, updates: Partial<BubbleStyle>) => {
+    setPages(prev => {
+      const next = [...prev];
+      const page = next[pageIndex];
+      if (!page) return prev;
+      const bubbles = [...page.bubbles];
+      const b = bubbles[bubbleIndex];
+      if (!b) return prev;
+      bubbles[bubbleIndex] = { ...b, style: { ...b.style, ...updates } };
+      next[pageIndex] = { ...page, bubbles };
+      return next;
+    });
+  }, []);
+
+  const saveCurrentPageBubbles = useCallback(async () => {
+    const page = pages[currentPageIndex];
+    if (!page?.id || !page.bubbles) return;
+    await supabase.from('pages').update({ bubbles_json: page.bubbles }).eq('id', page.id);
+  }, [pages, currentPageIndex]);
+
+  const saveBubblesRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const page = pages[currentPageIndex];
+    if (!page?.id) return;
+    if (saveBubblesRef.current) clearTimeout(saveBubblesRef.current);
+    saveBubblesRef.current = setTimeout(() => {
+      saveCurrentPageBubbles();
+      saveBubblesRef.current = null;
+    }, 500);
+    return () => { if (saveBubblesRef.current) clearTimeout(saveBubblesRef.current); };
+  }, [pages, currentPageIndex, saveCurrentPageBubbles]);
+
   const handleDownloadCurrentPage = async () => {
     if (!containerRef.current) return;
     const canvas = await html2canvas(containerRef.current, { useCORS: true, scale: 2 });
@@ -269,7 +330,8 @@ export default function Home() {
     if (pagesData) {
       // Map database structure back to our PageResult interface
       const formattedPages = pagesData.map(p => ({
-        bubbles: p.bubbles_json,
+        id: p.id,
+        bubbles: p.bubbles_json ?? [],
         cleaned_image: p.image_url,
         raw_image_url: p.raw_image_url ?? undefined,
         original_size: { width: p.width, height: p.height },
@@ -529,6 +591,19 @@ export default function Home() {
                       <option value="French">French</option>
                     </select>
                  </div>
+                 <div className="flex flex-col">
+                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Compare</label>
+                    <button
+                      type="button"
+                      aria-label={showCurtain ? 'Hide compare curtain' : 'Show compare curtain'}
+                      onClick={() => setShowCurtain((s) => !s)}
+                      className={`text-xs font-bold outline-none cursor-pointer transition rounded px-2 py-0.5 text-left ${
+                        showCurtain ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 hover:text-blue-400'
+                      }`}
+                    >
+                      {showCurtain ? 'On' : 'Off'}
+                    </button>
+                 </div>
               </div>
   
               <button onClick={() => { setShowHistory(true); fetchHistory(); }} className="text-xs font-bold hover:text-blue-400 transition">History</button>
@@ -679,8 +754,8 @@ export default function Home() {
                 ref={containerRef} 
                 className="relative shadow-[0_40px_100px_rgba(0,0,0,0.7)] bg-white"
               >
-                {/* Image layer(s): raw (bottom) + cleaned (top, optional clip for curtain) */}
-                {currentPage.raw_image_url ? (
+                {/* Image layer(s): when curtain ON + raw exists = two layers + clip; else single translated */}
+                {currentPage.raw_image_url && showCurtain ? (
                   <>
                     <img
                       src={currentPage.raw_image_url}
@@ -707,13 +782,13 @@ export default function Home() {
                   />
                 )}
 
-                {/* Bubbles: only visible on translated side (same clip as cleaned); ghost opacity when Shift held */}
+                {/* Bubbles: when curtain on, clip to translated side; ghost opacity when Shift held */}
                 <div
                   className="absolute inset-0"
                   style={{
-                    opacity: currentPage.raw_image_url && isGhosting ? 0.4 : 1,
+                    opacity: currentPage.raw_image_url && showCurtain && isGhosting ? 0.4 : 1,
                     transition: 'opacity 0.15s ease',
-                    ...(currentPage.raw_image_url && {
+                    ...(currentPage.raw_image_url && showCurtain && {
                       clipPath: `inset(0 ${100 - curtainX}% 0 0)`,
                     }),
                   }}
@@ -728,30 +803,33 @@ export default function Home() {
                   const height = ((y2 - y1) / origH) * 100;
 
                   const isEditing = editingIndex === i;
+                  const fontClass = bubble.style?.fontFamily ?? selectedFont;
+                  const fontSizeCq = bubble.style?.fontSize ?? 12;
+                  const textAlign = bubble.style?.textAlign ?? 'center';
+                  const justifyMap = { left: 'justify-start', center: 'justify-center', right: 'justify-end' } as const;
+                  const textAlignMap = { left: 'text-left', center: 'text-center', right: 'text-right' } as const;
 
                   return (
                     <div
                       key={i}
+                      ref={isEditing ? editingBubbleRef : undefined}
                       onClick={(e) => { e.stopPropagation(); setEditingIndex(i); }}
-                      // We set the container type here...
                       className="absolute z-10 overflow-hidden pointer-events-auto cursor-pointer"
                       style={{
                         left: `${left}%`,
                         top: `${top}%`,
                         width: `${width}%`,
                         height: `${height}%`,
-                        containerType: 'size', // This div is the container
+                        containerType: 'size',
                       }}
                     >
-                      {/* ...and apply the font size to this inner wrapper */}
                       <div 
-                        className={`w-full h-full flex items-center justify-center text-center p-[5cqmin]
-                                    uppercase tracking-tight leading-[1.1] ${selectedFont} text-black
+                        className={`w-full h-full flex items-center ${justifyMap[textAlign]} ${textAlignMap[textAlign]} p-[5cqmin]
+                                    uppercase tracking-tight leading-[1.1] ${fontClass} text-black
                                     ${isEditing ? 'bg-white/95 ring-2 ring-blue-500' : 'hover:bg-white/10'}`}
                         style={{
-                          // 8cqmin means "8% of the bubble's smallest dimension"
-                          // This is very stable and prevents the "MI RA" vertical stacking
-                          fontSize: '12cqmin', 
+                          fontSize: `${fontSizeCq}cqmin`,
+                          color: bubble.style?.fontColor ?? undefined,
                           textWrap: 'balance',
                           textShadow: isEditing ? 'none' : '0px 0px 2px white, 0px 0px 2px white',
                           transition: 'background 0.2s ease',
@@ -762,7 +840,10 @@ export default function Home() {
                             autoFocus
                             value={bubble.translated}
                             onChange={(e) => handleTextChange(currentPageIndex, i, e.target.value)}
-                            onBlur={() => setEditingIndex(null)}
+                            onBlur={(e) => {
+                              if (e.relatedTarget && floatingBarRef.current?.contains(e.relatedTarget as Node)) return;
+                              setEditingIndex(null);
+                            }}
                             onKeyDown={(e) => {
                               if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setEditingIndex(null); }
                             }}
@@ -778,8 +859,8 @@ export default function Home() {
                 })}
                 </div>
 
-                {/* Curtain slider: drag to compare raw vs cleaned (only when raw exists) */}
-                {currentPage.raw_image_url && (
+                {/* Curtain slider: only when Compare toggle is on and raw exists */}
+                {currentPage.raw_image_url && showCurtain && (
                   <div
                     className="absolute top-0 bottom-0 z-100 flex items-center pointer-events-auto"
                     style={{ left: `${curtainX}%`, transform: 'translateX(-50%)' }}
@@ -803,6 +884,67 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {/* Floating Properties Bar (when editing a bubble) */}
+          {editingIndex !== null && toolbarPosition !== null && currentPage && (
+            <div
+              ref={floatingBarRef}
+              className="fixed z-120 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3 py-2 rounded-xl border border-white/20 shadow-xl"
+              style={{
+                left: toolbarPosition.left,
+                top: toolbarPosition.top,
+                transform: 'translate(-50%, -100%)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest mr-1">Size</span>
+              <button
+                type="button"
+                aria-label="Decrease font size"
+                onClick={() => updateBubbleStyle(currentPageIndex, editingIndex, { fontSize: Math.max(6, (currentPage.bubbles[editingIndex]?.style?.fontSize ?? 12) - 1) })}
+                className="p-1.5 hover:bg-white/10 rounded-lg text-xs font-bold"
+              >
+                −
+              </button>
+              <span className="text-[10px] font-mono w-6 text-center">{currentPage.bubbles[editingIndex]?.style?.fontSize ?? 12}</span>
+              <button
+                type="button"
+                aria-label="Increase font size"
+                onClick={() => updateBubbleStyle(currentPageIndex, editingIndex, { fontSize: Math.min(24, (currentPage.bubbles[editingIndex]?.style?.fontSize ?? 12) + 1) })}
+                className="p-1.5 hover:bg-white/10 rounded-lg text-xs font-bold"
+              >
+                +
+              </button>
+              <div className="w-px h-4 bg-white/20 mx-1" />
+              <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest mr-1">Font</span>
+              <select
+                value={currentPage.bubbles[editingIndex]?.style?.fontFamily ?? selectedFont}
+                onChange={(e) => updateBubbleStyle(currentPageIndex, editingIndex, { fontFamily: e.target.value })}
+                className="bg-white/10 border-0 rounded px-2 py-1 text-[10px] font-bold outline-none cursor-pointer"
+              >
+                <option value="font-anime">Anime Ace</option>
+                <option value="font-action">Action Man</option>
+                <option value="font-smack">Smack Attack</option>
+              </select>
+              <div className="w-px h-4 bg-white/20 mx-1" />
+              <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest mr-1">Align</span>
+              {(['left', 'center', 'right'] as const).map((align) => (
+                <button
+                  key={align}
+                  type="button"
+                  aria-label={`Align ${align}`}
+                  onClick={() => updateBubbleStyle(currentPageIndex, editingIndex, { textAlign: align })}
+                  className={`p-1.5 rounded-lg text-[10px] font-bold uppercase transition ${
+                    (currentPage.bubbles[editingIndex]?.style?.textAlign ?? 'center') === align
+                      ? 'bg-blue-500/50 text-white'
+                      : 'hover:bg-white/10 text-gray-400'
+                  }`}
+                >
+                  {align === 'left' ? 'L' : align === 'center' ? 'C' : 'R'}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Floating Zoom Controls (UI Juice) */}
           <div className="absolute bottom-6 right-6 flex items-center gap-2 bg-black/40 backdrop-blur-md p-2 rounded-xl border border-white/10 z-120">
