@@ -220,10 +220,9 @@ async def process_page_pipeline(
 
     try:
         glossary_items = json.loads(glossary)
-    except:
+    except Exception:
         glossary_items = []
-    
-    # We no longer insert a project here! The frontend already did it.
+    # Backend is series-agnostic: it uses whatever glossary JSON the frontend sends (series-level or otherwise).
     print(f"📁 Processing Project: {project_id} with {len(glossary_items)} glossary terms")
 
     if file.filename.endswith(".pdf"):

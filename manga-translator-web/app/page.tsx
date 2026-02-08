@@ -31,6 +31,12 @@ interface PageResult {
   project_id: string;
 }
 
+interface Series {
+  id: string;
+  name: string;
+  user_id: string;
+}
+
 interface GlossaryItem {
   id?: string;
   japanese: string;
@@ -88,6 +94,22 @@ export default function Home() {
 
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [seriesList, setSeriesList] = useState<Series[]>([]);
+  const [selectedSeriesId, setSelectedSeriesId] = useState<string | null>(null);
+  const [isCreatingSeries, setIsCreatingSeries] = useState(false);
+  const [newSeriesName, setNewSeriesName] = useState('');
+  const [currentProject, setCurrentProject] = useState<{ id: string; title: string; series_id: string } | null>(null);
+  const [showSeriesPickerModal, setShowSeriesPickerModal] = useState(false);
+  const [showDeleteSeriesModal, setShowDeleteSeriesModal] = useState(false);
+  const [seriesToDeleteId, setSeriesToDeleteId] = useState<string | null>(null);
+
+  type AppView = 'series-gallery' | 'series-detail' | 'studio';
+  const [appView, setAppView] = useState<AppView>('series-gallery');
+  const [seriesProjects, setSeriesProjects] = useState<{ id: string; title: string; created_at: string; series_id: string }[]>([]);
+  const [editingSeriesId, setEditingSeriesId] = useState<string | null>(null);
+  const [editingSeriesName, setEditingSeriesName] = useState('');
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectTitle, setEditingProjectTitle] = useState('');
 
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
@@ -238,7 +260,6 @@ export default function Home() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setPages([]);
     setCurrentPageIndex(0);
     setEditingIndex(null);
@@ -247,33 +268,47 @@ export default function Home() {
 
   const processFile = async (file: File) => {
     if (!user) return alert("Please log in first!");
+    let seriesId = selectedSeriesId ?? currentProject?.series_id;
+    if (isCreatingSeries && newSeriesName.trim()) {
+      const { data: newSeries, error: sErr } = await supabase
+        .from('series')
+        .insert({ name: newSeriesName.trim(), user_id: user.id })
+        .select('id')
+        .single();
+      if (sErr) {
+        alert("Failed to create series. Check console.");
+        setLoading(false);
+        return;
+      }
+      seriesId = newSeries.id;
+      setSeriesList((prev) => [...prev, { id: newSeries.id, name: newSeriesName.trim(), user_id: user.id }]);
+      if (newSeries.id) setSelectedSeriesId(newSeries.id);
+      setIsCreatingSeries(false);
+      setNewSeriesName('');
+    }
+    if (!seriesId) {
+      alert("Select a series or create one before uploading.");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-
     try {
-      // 1. CREATE PROJECT ON FRONTEND
       const { data: project, error: pError } = await supabase
         .from('projects')
-        .insert({ title: file.name, user_id: user.id })
+        .insert({ title: file.name, user_id: user.id, series_id: seriesId })
         .select()
         .single();
-
       if (pError) throw pError;
 
-      // 2. SEND TO BACKEND
       const formData = new FormData();
       formData.append('file', file);
       formData.append('target_language', targetLang);
       formData.append('project_id', project.id);
-      // We send the glossary so the AI knows the rules for this specific upload
       formData.append('glossary', JSON.stringify(glossary));
 
-      // Wait for the backend to finish processing all pages
       await axios.post('http://127.0.0.1:8000/process-page', formData);
-
-      // 3. SYNC UI
-      // This will fetch the fresh pages and the glossary from the DB
+      await fetchHistory();
       await loadProject(project.id);
-      
     } catch (error) {
       console.error("Processing failed:", error);
       alert("Failed to process file. Check backend logs.");
@@ -334,11 +369,12 @@ export default function Home() {
   const currentPage = pages[currentPageIndex];
 
   const fetchHistory = async () => {
-    const { data, error } = await supabase
+    if (!user) return;
+    const { data } = await supabase
       .from('projects')
-      .select('*')
+      .select('id, title, created_at, series_id')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false });
-  
     if (data) setHistory(data);
   };
 
@@ -368,26 +404,59 @@ export default function Home() {
     }
   };
   
-  // Fetch on load
+  const fetchSeries = useCallback(async () => {
+    if (!user) return;
+    const { data } = await supabase.from('series').select('id, name, user_id').eq('user_id', user.id).order('name');
+    if (data) setSeriesList(data);
+  }, [user]);
+
+  const fetchProjectsForSeries = useCallback(async (seriesId: string) => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('projects')
+      .select('id, title, created_at, series_id')
+      .eq('series_id', seriesId)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    if (data) setSeriesProjects(data);
+  }, [user]);
+
   useEffect(() => {
-    fetchHistory();
-  }, []);
+    if (user) fetchSeries();
+  }, [user, fetchSeries]);
+
+  useEffect(() => {
+    if (user) fetchHistory();
+  }, [user]);
+
+  useEffect(() => {
+    if (appView === 'series-detail' && selectedSeriesId && user) {
+      fetchProjectsForSeries(selectedSeriesId);
+      fetchGlossary(selectedSeriesId);
+    }
+  }, [appView, selectedSeriesId, user, fetchProjectsForSeries]);
 
   const loadProject = async (projectId: string) => {
     setLoading(true);
     setShowHistory(false);
-  
-    const { data: pagesData, error } = await supabase
+    let project = history.find((p: { id: string }) => p.id === projectId) as { id: string; title: string; series_id: string } | undefined;
+    if (!project) {
+      const { data: projRow } = await supabase.from('projects').select('id, title, series_id').eq('id', projectId).single();
+      project = projRow ?? undefined;
+    }
+    if (project) {
+      setCurrentProject({ id: project.id, title: project.title, series_id: project.series_id });
+      setSelectedSeriesId(project.series_id);
+    } else setCurrentProject(null);
+    const { data: pagesData } = await supabase
       .from('pages')
       .select('*')
       .eq('project_id', projectId)
       .order('page_number', { ascending: true });
-  
     if (pagesData) {
-      // Map database structure back to our PageResult interface
-      const formattedPages = pagesData.map(p => ({
+      const formattedPages: PageResult[] = pagesData.map((p: { id: string; bubbles_json: Bubble[] | null; image_url: string; raw_image_url?: string; width: number; height: number; project_id: string }) => ({
         id: p.id,
-        bubbles: p.bubbles_json ?? [],
+        bubbles: (p.bubbles_json ?? []) as Bubble[],
         cleaned_image: p.image_url,
         raw_image_url: p.raw_image_url ?? undefined,
         original_size: { width: p.width, height: p.height },
@@ -395,49 +464,69 @@ export default function Home() {
       }));
       setPages(formattedPages);
       setCurrentPageIndex(0);
-      fetchGlossary(projectId); 
+      if (project?.series_id) fetchGlossary(project.series_id);
+      setAppView('studio');
     }
     setLoading(false);
   };
 
   const deleteProject = async (e: React.MouseEvent, projectId: string) => {
-    // Prevent the click from triggering 'loadProject'
     e.stopPropagation();
-    
-    if (!confirm("Are you sure you want to delete this translation?")) return;
-  
+    if (!confirm("Are you sure you want to delete this chapter? Series and glossary are kept.")) return;
     try {
-      // 1. Delete the Project from the DB 
-      // (The 'pages' rows will cascade delete automatically)
-      const { error: dbError } = await supabase
-        .from('projects')
-        .delete()
-        .eq('id', projectId);
-  
+      const { error: dbError } = await supabase.from('projects').delete().eq('id', projectId);
       if (dbError) throw dbError;
-  
-      // 2. Clean up Storage
-      // We get a list of all files in the project folder and delete them
-      const { data: files } = await supabase.storage
-        .from('manga-images')
-        .list(projectId);
-  
-      if (files && files.length > 0) {
-        const pathsToDelete = files.map(f => `${projectId}/${f.name}`);
+      const { data: files } = await supabase.storage.from('manga-images').list(projectId);
+      if (files?.length) {
+        const pathsToDelete = files.map((f: { name: string }) => `${projectId}/${f.name}`);
         await supabase.storage.from('manga-images').remove(pathsToDelete);
       }
-  
-      // 3. Update local state
-      setHistory(prev => prev.filter(p => p.id !== projectId));
-      
-      // 4. If we are currently viewing the deleted project, clear the screen
-      if (pages.length > 0 && history.find(p => p.id === projectId)) {
-          setPages([]);
+      setHistory((prev) => prev.filter((p: { id: string }) => p.id !== projectId));
+      setSeriesProjects((prev) => prev.filter((p) => p.id !== projectId));
+      if (currentProject?.id === projectId) {
+        setCurrentProject(null);
+        setPages([]);
+        setAppView('series-detail');
       }
-  
     } catch (error) {
       console.error("Error deleting project:", error);
       alert("Failed to delete project.");
+    }
+  };
+
+  const deleteSeries = async (seriesId: string) => {
+    const seriesName = seriesList.find((s) => s.id === seriesId)?.name ?? 'this series';
+    if (!confirm(`Permanently delete "${seriesName}"? All chapters and glossary terms will be removed. This cannot be undone.`)) return;
+    try {
+      const { data: projectsInSeries } = await supabase.from('projects').select('id').eq('series_id', seriesId);
+      if (projectsInSeries?.length) {
+        for (const proj of projectsInSeries) {
+          const { data: files } = await supabase.storage.from('manga-images').list(proj.id);
+          if (files?.length) {
+            await supabase.storage.from('manga-images').remove(files.map((f: { name: string }) => `${proj.id}/${f.name}`));
+          }
+        }
+      }
+      const { error } = await supabase.from('series').delete().eq('id', seriesId);
+      if (error) throw error;
+      setSeriesList((prev) => prev.filter((s) => s.id !== seriesId));
+      if (selectedSeriesId === seriesId) {
+        setSelectedSeriesId(null);
+        setGlossary([]);
+        setSeriesProjects([]);
+        setAppView('series-gallery');
+      }
+      if (currentProject?.series_id === seriesId) {
+        setCurrentProject(null);
+        setPages([]);
+        setAppView('series-gallery');
+      }
+      setSeriesToDeleteId(null);
+      setShowDeleteSeriesModal(false);
+      fetchHistory();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to delete series.");
     }
   };
 
@@ -474,7 +563,28 @@ export default function Home() {
       }
     }
   
-    // C. Deep Search in Bubbles
+    if (("switch series".includes(q) || q === "series") && seriesList.length > 0) {
+      results.push({
+        type: 'command',
+        label: 'Switch Series',
+        sublabel: 'Change active series',
+        action: () => { setShowSeriesPickerModal(true); setIsPaletteOpen(false); setPaletteQuery(""); },
+        icon: <ChevronRight size={14}/>
+      });
+    }
+
+    glossary.forEach((g) => {
+      if (g.english.toLowerCase().includes(q) || (g.japanese && g.japanese.includes(q))) {
+        results.push({
+          type: 'glossary',
+          label: `${g.english}`,
+          sublabel: g.japanese,
+          action: () => { setIsPaletteOpen(false); setPaletteQuery(""); },
+          icon: <Save size={14}/>
+        });
+      }
+    });
+
     pages.forEach((page, pIdx) => {
       page.bubbles.forEach((bubble) => {
         if (bubble.translated.toLowerCase().includes(q)) {
@@ -489,27 +599,31 @@ export default function Home() {
       });
     });
   
-    return results.slice(0, 8); // Limit to top 8 results
+    return results.slice(0, 8);
   };
 
-  const fetchGlossary = async (projectId: string) => {
+  const fetchGlossary = async (seriesId: string) => {
     const { data } = await supabase
       .from('glossary_items')
       .select('id, japanese, english')
-      .eq('project_id', projectId);
+      .eq('series_id', seriesId);
     if (data) setGlossary(data);
   };
   
   const addGlossaryTerm = async () => {
-    if (!newTerm.jp || !newTerm.en || !pages.length) return;
-  
+    if (!newTerm.jp || !newTerm.en) return;
+    const seriesId = selectedSeriesId ?? currentProject?.series_id;
+    if (!seriesId) {
+      alert('Select or create a series first.');
+      return;
+    }
     if (editingGlossaryItem?.id) {
       const { error } = await supabase
         .from('glossary_items')
         .update({ japanese: newTerm.jp, english: newTerm.en })
         .eq('id', editingGlossaryItem.id);
       if (!error) {
-        await fetchGlossary(pages[0].project_id);
+        await fetchGlossary(seriesId);
         setNewTerm({ jp: '', en: '' });
         setEditingGlossaryItem(null);
       } else {
@@ -517,23 +631,22 @@ export default function Home() {
       }
       return;
     }
-  
-    const { error } = await supabase
-      .from('glossary_items')
-      .insert({
-        project_id: pages[0].project_id,
-        japanese: newTerm.jp,
-        english: newTerm.en,
-      });
-  
+    const { error } = await supabase.from('glossary_items').insert({
+      series_id: seriesId,
+      user_id: user.id,
+      japanese: newTerm.jp,
+      english: newTerm.en,
+    });
     if (!error) {
-      await fetchGlossary(pages[0].project_id);
+      await fetchGlossary(seriesId);
       setNewTerm({ jp: '', en: '' });
+    } else {
+      alert('Failed to add term.');
     }
   };
 
   const deleteGlossaryItem = async (item: GlossaryItem) => {
-    if (!item.id || !pages.length) return;
+    if (!item.id) return;
     if (!confirm(`Remove "${item.english}" from the glossary?`)) return;
     const { error } = await supabase.from('glossary_items').delete().eq('id', item.id);
     if (!error) {
@@ -699,84 +812,335 @@ export default function Home() {
 
   return (
     <main className="h-screen w-full bg-[#0b0c10] text-gray-100 flex flex-col overflow-hidden font-sans selection:bg-blue-500/30">
-      
-      {/* --- 1. THE STUDIO HEADER --- */}
-      <header className="h-14 border-b border-white/5 bg-black/20 backdrop-blur-md flex items-center justify-between px-6 z-110 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-blue-400 font-black tracking-tighter text-xl">
-            <ScanEye size={24} />
-            <span>MangaPulse <span className="text-[10px] text-gray-500 font-mono tracking-normal ml-1 uppercase">Studio v1.0</span></span>
-          </div>
-        </div>
-  
-        <div className="flex items-center gap-6">
-          {user && (
-            <>
-              <div className="flex items-center gap-4 border-r border-white/10 pr-6 mr-2">
-                 <div className="flex flex-col">
-                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Typography</label>
-                    <select 
-                      value={selectedFont} 
-                      onChange={(e) => setSelectedFont(e.target.value)}
-                      className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition"
-                    >
-                      <option value="font-anime">Anime Ace</option>
-                      <option value="font-action">Action Man</option>
-                      <option value="font-smack">Smack Attack</option>
-                    </select>
-                 </div>
-                 <div className="flex flex-col">
-                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Language</label>
-                    <select 
-                      value={targetLang} 
-                      onChange={(e) => setTargetLang(e.target.value)}
-                      className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition"
-                    >
-                      <option value="English">English</option>
-                      <option value="Spanish">Spanish</option>
-                      <option value="French">French</option>
-                    </select>
-                 </div>
-                 <div className="flex flex-col">
-                    <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Compare</label>
+      <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
+
+      {/* --- SERIES GALLERY (first screen after login) --- */}
+      {user && appView === 'series-gallery' && (
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <header className="border-b border-white/5 bg-black/20 backdrop-blur-md h-12 px-4 sm:px-6 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <ScanEye size={22} className="text-blue-400 shrink-0" />
+              <span className="text-blue-400 font-black tracking-tighter text-lg">MangaPulse</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => { setIsCreatingSeries(true); setNewSeriesName(''); }}
+                className="text-xs font-bold text-gray-400 hover:text-blue-400 transition"
+              >
+                New series
+              </button>
+              <button onClick={handleSignOut} className="text-xs font-bold text-gray-500 hover:text-red-400 transition">Sign Out</button>
+            </div>
+          </header>
+          <div className="flex-1 overflow-y-auto p-6">
+            {isCreatingSeries && (
+              <div className="mb-6 p-4 bg-white/5 border border-white/10 rounded-xl flex flex-wrap items-center gap-3">
+                <input
+                  type="text"
+                  placeholder="Series name"
+                  value={newSeriesName}
+                  onChange={(e) => setNewSeriesName(e.target.value)}
+                  className="flex-1 min-w-40 bg-white/5 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!newSeriesName.trim() || !user) return;
+                    const { data: newSeries, error } = await supabase
+                      .from('series')
+                      .insert({ name: newSeriesName.trim(), user_id: user.id })
+                      .select('id, name, user_id')
+                      .single();
+                    if (!error && newSeries) {
+                      setSeriesList((prev) => [...prev, newSeries]);
+                      setSelectedSeriesId(newSeries.id);
+                      setIsCreatingSeries(false);
+                      setNewSeriesName('');
+                      setAppView('series-detail');
+                    }
+                  }}
+                  className="px-4 py-2 bg-blue-600 rounded-lg text-xs font-bold hover:bg-blue-500"
+                >
+                  Create
+                </button>
+                <button type="button" onClick={() => { setIsCreatingSeries(false); setNewSeriesName(''); }} className="text-gray-500 hover:text-white text-xs">Cancel</button>
+              </div>
+            )}
+            <h1 className="text-xl font-black uppercase tracking-tighter mb-6 text-gray-300">Your series</h1>
+            {seriesList.length === 0 && !isCreatingSeries ? (
+              <div className="text-center py-16 text-gray-500">
+                <p className="mb-4">No series yet.</p>
+                <button onClick={() => setIsCreatingSeries(true)} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">Create your first series</button>
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {seriesList.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group relative p-4 bg-white/5 border border-white/10 rounded-xl hover:border-blue-500/50 transition"
+                  >
                     <button
                       type="button"
-                      aria-label={showCurtain ? 'Hide compare curtain' : 'Show compare curtain'}
-                      onClick={() => setShowCurtain((s) => !s)}
-                      className={`text-xs font-bold outline-none cursor-pointer transition rounded px-2 py-0.5 text-left ${
-                        showCurtain ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 hover:text-blue-400'
-                      }`}
+                      className="w-full text-left block pr-20"
+                      onClick={() => { setSelectedSeriesId(s.id); setAppView('series-detail'); }}
                     >
-                      {showCurtain ? 'On' : 'Off'}
+                      <span className="font-bold text-sm text-white truncate block">{s.name}</span>
                     </button>
-                 </div>
+                    <div className="absolute top-3 right-3 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setEditingSeriesId(s.id); setEditingSeriesName(s.name); }}
+                        className="p-1.5 text-gray-500 hover:text-blue-400 rounded transition"
+                        title="Rename series"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setSeriesToDeleteId(s.id); setShowDeleteSeriesModal(true); }}
+                        className="p-1.5 text-gray-500 hover:text-red-400 rounded transition"
+                        title="Delete series"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
-  
-              <button onClick={() => { setShowHistory(true); fetchHistory(); }} className="text-xs font-bold hover:text-blue-400 transition">History</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* --- SERIES DETAIL (projects + glossary + upload) --- */}
+      {user && appView === 'series-detail' && selectedSeriesId && (
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <header className="border-b border-white/5 bg-black/20 backdrop-blur-md h-12 px-4 sm:px-6 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setAppView('series-gallery')} className="p-1 text-gray-500 hover:text-white rounded"><ChevronLeft size={20} /></button>
+              <span className="text-gray-300 font-bold truncate">{seriesList.find((s) => s.id === selectedSeriesId)?.name ?? '…'}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => fileInputRef.current?.click()} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-black transition">
+                <Upload size={14} className="inline mr-1" /> Upload chapter
+              </button>
               <button onClick={handleSignOut} className="text-xs font-bold text-gray-500 hover:text-red-400 transition">Sign Out</button>
-              
-              <div className="flex gap-2 ml-4">
-                {currentPage && (
-                  <button 
-                    onClick={handleDownloadCurrentPage}
-                    className="flex items-center gap-2 px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded-lg text-xs font-black transition"
-                  >
-                    <Download size={14}/> Export
-                  </button>
-                )}
-                <button 
-                  onClick={() => fileInputRef.current?.click()} 
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-black transition"
-                >
-                  Upload
-                </button>
+            </div>
+          </header>
+          <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-8">
+            <section>
+              <h2 className="text-sm font-black uppercase tracking-widest text-gray-500 mb-4">Chapters</h2>
+              {seriesProjects.length === 0 ? (
+                <p className="text-gray-500 text-sm">No chapters yet. Upload a file above.</p>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {seriesProjects.map((proj) => (
+                    <div key={proj.id} className="group relative p-4 bg-white/5 border border-white/10 rounded-xl hover:border-blue-500/50 transition">
+                      <button
+                        type="button"
+                        className="w-full text-left block pr-20"
+                        onClick={() => loadProject(proj.id)}
+                      >
+                        <span className="font-bold text-sm text-white truncate block">{proj.title}</span>
+                        <span className="text-[10px] text-gray-500 mt-1 block">{new Date(proj.created_at).toLocaleDateString()}</span>
+                      </button>
+                      <div className="absolute top-3 right-3 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setEditingProjectId(proj.id); setEditingProjectTitle(proj.title); }}
+                          className="p-1.5 text-gray-500 hover:text-blue-400 rounded transition"
+                          title="Rename chapter"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => deleteProject(e, proj.id)}
+                          className="p-1.5 text-gray-500 hover:text-red-400 rounded transition"
+                          title="Delete chapter"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+            <section>
+              <h2 className="text-sm font-black uppercase tracking-widest text-gray-500 mb-4">Glossary</h2>
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    type="text"
+                    placeholder="Japanese"
+                    value={newTerm.jp}
+                    onChange={(e) => setNewTerm((t) => ({ ...t, jp: e.target.value }))}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addGlossaryTerm())}
+                    className="flex-1 min-w-24 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="English"
+                    value={newTerm.en}
+                    onChange={(e) => setNewTerm((t) => ({ ...t, en: e.target.value }))}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addGlossaryTerm())}
+                    className="flex-1 min-w-24 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+                  />
+                  <button type="button" onClick={addGlossaryTerm} className="px-3 py-1.5 bg-blue-600 rounded text-xs font-bold hover:bg-blue-500">Add</button>
+                </div>
+                <ul className="space-y-2 max-h-48 overflow-y-auto">
+                  {glossary.map((g) => (
+                    <li key={g.id ?? g.japanese} className="flex items-center justify-between gap-2 py-1 border-b border-white/5 text-xs">
+                      <span className="text-gray-300">{g.japanese}</span>
+                      <span className="text-white font-medium">{g.english}</span>
+                      <button type="button" onClick={() => deleteGlossaryItem(g)} className="text-gray-500 hover:text-red-400">Remove</button>
+                    </li>
+                  ))}
+                </ul>
+                {glossary.length === 0 && <p className="text-gray-500 text-xs">No terms yet. Add Japanese/English pairs above.</p>}
               </div>
-            </>
+            </section>
+          </div>
+        </div>
+      )}
+
+      {/* --- STUDIO (only when a project is open) --- */}
+      {user && appView === 'studio' && (
+        <>
+      {/* --- 1. THE STUDIO HEADER (two rows to avoid cramping) --- */}
+      <header className="border-b border-white/5 bg-black/20 backdrop-blur-md flex flex-col z-110 shrink-0">
+        {/* Row 1: Logo, breadcrumb, main actions */}
+        <div className="h-12 px-4 sm:px-6 flex items-center justify-between gap-3 min-h-0">
+          <div className="flex items-center gap-2 min-w-0 shrink">
+            <ScanEye size={22} className="text-blue-400 shrink-0" />
+            <span className="text-blue-400 font-black tracking-tighter text-lg truncate">
+              MangaPulse <span className="text-[10px] text-gray-500 font-mono tracking-normal ml-1 uppercase">Studio v1.0</span>
+            </span>
+            {currentProject && (
+              <>
+                <span className="text-gray-600 shrink-0">/</span>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedSeriesId(currentProject.series_id); setAppView('series-detail'); }}
+                  className="text-gray-500 hover:text-blue-400 text-xs truncate min-w-0 transition"
+                  title={seriesList.find((s) => s.id === currentProject.series_id)?.name}
+                >
+                  {seriesList.find((s) => s.id === currentProject.series_id)?.name ?? '…'}
+                </button>
+                <span className="text-gray-400 text-xs shrink-0"> &gt; </span>
+                <span className="text-gray-400 text-xs truncate" title={currentProject.title}>{currentProject.title}</span>
+              </>
+            )}
+          </div>
+          {user && (
+            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+              <button onClick={handleSignOut} className="text-xs font-bold text-gray-500 hover:text-red-400 transition">Sign Out</button>
+              {currentPage && (
+                <button onClick={handleDownloadCurrentPage} className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded-lg text-xs font-black transition">
+                  <Download size={14}/> Export
+                </button>
+              )}
+              <button onClick={() => fileInputRef.current?.click()} className="px-3 py-1.5 sm:px-4 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-black transition">
+                Upload
+              </button>
+            </div>
           )}
         </div>
+
+        {/* Row 2: Series, Typography, Language, Compare (wraps on small screens) */}
+        {user && (
+          <div className="h-10 px-4 sm:px-6 flex items-center flex-wrap gap-x-4 gap-y-2 border-t border-white/5 bg-black/10">
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Series</label>
+              <select
+                value={isCreatingSeries ? '__new__' : (selectedSeriesId ?? '')}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '__new__') {
+                    setIsCreatingSeries(true);
+                    setSelectedSeriesId(null);
+                  } else {
+                    setIsCreatingSeries(false);
+                    setNewSeriesName('');
+                    setSelectedSeriesId(v || null);
+                    if (v) fetchGlossary(v);
+                  }
+                }}
+                className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs font-bold outline-none cursor-pointer hover:border-blue-500 min-w-32 max-w-48"
+              >
+                <option value="">Select series…</option>
+                {seriesList.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+                <option value="__new__">— Add New Series —</option>
+              </select>
+              {isCreatingSeries && (
+                <>
+                  <input
+                    type="text"
+                    placeholder="Series name"
+                    value={newSeriesName}
+                    onChange={(e) => setNewSeriesName(e.target.value)}
+                    className="w-28 sm:w-36 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!newSeriesName.trim() || !user) return;
+                      const { data: newSeries, error } = await supabase
+                        .from('series')
+                        .insert({ name: newSeriesName.trim(), user_id: user.id })
+                        .select('id, name, user_id')
+                        .single();
+                      if (!error && newSeries) {
+                        setSeriesList((prev) => [...prev, newSeries]);
+                        setSelectedSeriesId(newSeries.id);
+                        setIsCreatingSeries(false);
+                        setNewSeriesName('');
+                        fetchGlossary(newSeries.id);
+                      }
+                    }}
+                    className="px-2 py-1 bg-blue-600 rounded text-[10px] font-bold hover:bg-blue-500"
+                  >
+                    Create
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex flex-col">
+                <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Typography</label>
+                <select value={selectedFont} onChange={(e) => setSelectedFont(e.target.value)} className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition">
+                  <option value="font-anime">Anime Ace</option>
+                  <option value="font-action">Action Man</option>
+                  <option value="font-smack">Smack Attack</option>
+                </select>
+              </div>
+              <div className="flex flex-col">
+                <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Language</label>
+                <select value={targetLang} onChange={(e) => setTargetLang(e.target.value)} className="bg-transparent text-xs font-bold outline-none cursor-pointer hover:text-blue-400 transition">
+                  <option value="English">English</option>
+                  <option value="Spanish">Spanish</option>
+                  <option value="French">French</option>
+                </select>
+              </div>
+              <div className="flex flex-col">
+                <label className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Compare</label>
+                <button
+                  type="button"
+                  aria-label={showCurtain ? 'Hide compare curtain' : 'Show compare curtain'}
+                  onClick={() => setShowCurtain((s) => !s)}
+                  className={`text-xs font-bold outline-none cursor-pointer transition rounded px-2 py-0.5 text-left ${showCurtain ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 hover:text-blue-400'}`}
+                >
+                  {showCurtain ? 'On' : 'Off'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
-  
-      <input type="file" hidden ref={fileInputRef} accept="image/*,.pdf" onChange={handleFileChange} />
   
       {/* --- 2. THE WORKSPACE --- */}
       <div className="flex-1 flex overflow-hidden">
@@ -1213,31 +1577,7 @@ export default function Home() {
             <span>FPS: 60</span>
           </div>
       </footer>
-  
-      {/* HISTORY SIDEBAR (Keep your existing history logic here) */}
-      {showHistory && (
-        <div className="fixed inset-0 z-200 flex justify-end">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowHistory(false)} />
-          <div className="relative w-80 h-full bg-gray-950 border-l border-white/10 p-6 overflow-y-auto">
-            <div className="flex justify-between items-center mb-8">
-              <h2 className="text-xl font-black uppercase tracking-tighter">History</h2>
-              <button onClick={() => setShowHistory(false)} className="text-gray-500 hover:text-white"><X /></button>
-            </div>
-            <div className="flex flex-col gap-3">
-              {history.map((project) => (
-                <div 
-                  key={project.id}
-                  onClick={() => loadProject(project.id)}
-                  className="p-4 bg-gray-900/50 border border-white/5 rounded-xl cursor-pointer hover:border-blue-500 transition group relative"
-                >
-                  <button onClick={(e) => deleteProject(e, project.id)} className="absolute top-2 right-2 text-gray-700 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"><Trash2 size={14} /></button>
-                  <p className="font-bold text-sm truncate pr-4">{project.title}</p>
-                  <p className="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">{new Date(project.created_at).toLocaleDateString()}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        </>
       )}
 
       {/* --- FEATURE #6: COMMAND PALETTE --- */}
@@ -1307,6 +1647,123 @@ export default function Home() {
               <span className="text-[9px] text-gray-600"><strong>ENTER</strong> to select</span>
               <span className="text-[9px] text-gray-600"><strong>P + #</strong> to jump to page</span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Series confirmation modal — z-[200] above canvas */}
+      {showDeleteSeriesModal && seriesToDeleteId && (
+        <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { setShowDeleteSeriesModal(false); setSeriesToDeleteId(null); }} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-red-500/30 p-6 rounded-2xl shadow-2xl">
+            <h2 className="text-lg font-black text-red-400 mb-2">Delete entire series?</h2>
+            <p className="text-sm text-gray-400 mb-4">
+              This will permanently remove <strong>{seriesList.find((s) => s.id === seriesToDeleteId)?.name ?? 'this series'}</strong>, all its chapters, and all glossary terms. This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => { setShowDeleteSeriesModal(false); setSeriesToDeleteId(null); }} className="flex-1 py-2 rounded-lg border border-white/20 font-bold text-sm hover:bg-white/10">Cancel</button>
+              <button onClick={() => seriesToDeleteId && deleteSeries(seriesToDeleteId)} className="flex-1 py-2 rounded-lg bg-red-600 font-bold text-sm hover:bg-red-500">Delete series</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Series name modal */}
+      {editingSeriesId && (
+        <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { setEditingSeriesId(null); setEditingSeriesName(''); }} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-white/10 p-6 rounded-2xl shadow-2xl">
+            <h2 className="text-lg font-black mb-4">Rename series</h2>
+            <input
+              type="text"
+              value={editingSeriesName}
+              onChange={(e) => setEditingSeriesName(e.target.value)}
+              placeholder="Series name"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500 mb-4"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => { setEditingSeriesId(null); setEditingSeriesName(''); }} className="flex-1 py-2 rounded-lg border border-white/20 font-bold text-sm hover:bg-white/10">Cancel</button>
+              <button
+                onClick={async () => {
+                  if (!editingSeriesName.trim()) return;
+                  const { error } = await supabase.from('series').update({ name: editingSeriesName.trim() }).eq('id', editingSeriesId);
+                  if (!error) {
+                    setSeriesList((prev) => prev.map((s) => (s.id === editingSeriesId ? { ...s, name: editingSeriesName.trim() } : s)));
+                    setEditingSeriesId(null);
+                    setEditingSeriesName('');
+                  } else {
+                    alert('Failed to rename series.');
+                  }
+                }}
+                className="flex-1 py-2 rounded-lg bg-blue-600 font-bold text-sm hover:bg-blue-500"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Project title modal */}
+      {editingProjectId && (
+        <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { setEditingProjectId(null); setEditingProjectTitle(''); }} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-white/10 p-6 rounded-2xl shadow-2xl">
+            <h2 className="text-lg font-black mb-4">Rename chapter</h2>
+            <input
+              type="text"
+              value={editingProjectTitle}
+              onChange={(e) => setEditingProjectTitle(e.target.value)}
+              placeholder="Chapter title"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500 mb-4"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => { setEditingProjectId(null); setEditingProjectTitle(''); }} className="flex-1 py-2 rounded-lg border border-white/20 font-bold text-sm hover:bg-white/10">Cancel</button>
+              <button
+                onClick={async () => {
+                  if (!editingProjectTitle.trim()) return;
+                  const { error } = await supabase.from('projects').update({ title: editingProjectTitle.trim() }).eq('id', editingProjectId);
+                  if (!error) {
+                    setSeriesProjects((prev) => prev.map((p) => (p.id === editingProjectId ? { ...p, title: editingProjectTitle.trim() } : p)));
+                    if (currentProject?.id === editingProjectId) setCurrentProject((prev) => (prev ? { ...prev, title: editingProjectTitle.trim() } : null));
+                    setEditingProjectId(null);
+                    setEditingProjectTitle('');
+                  } else {
+                    alert('Failed to rename chapter.');
+                  }
+                }}
+                className="flex-1 py-2 rounded-lg bg-blue-600 font-bold text-sm hover:bg-blue-500"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Switch Series picker modal — z-[200] */}
+      {showSeriesPickerModal && (
+        <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setShowSeriesPickerModal(false)} />
+          <div className="relative w-full max-w-sm bg-gray-900 border border-gray-800 p-6 rounded-2xl shadow-2xl">
+            <h2 className="text-lg font-black mb-4">Switch Series</h2>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {seriesList.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSeriesId(s.id);
+                    fetchGlossary(s.id);
+                    setShowSeriesPickerModal(false);
+                  }}
+                  className="w-full text-left px-4 py-2 rounded-lg hover:bg-white/10 font-medium"
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setShowSeriesPickerModal(false)} className="mt-4 w-full py-2 rounded-lg border border-white/20 text-sm font-bold hover:bg-white/10">Cancel</button>
           </div>
         </div>
       )}
